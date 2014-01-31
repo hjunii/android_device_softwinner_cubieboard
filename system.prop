@@ -1,0 +1,5 @@
+ro.opengles.version = 131072
+wifi.interface=wlan0
+
+# set default lcd density to TVDPI
+ro.sf.lcd_density=213
