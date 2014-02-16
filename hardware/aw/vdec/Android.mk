@@ -8,16 +8,14 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES:= omx_vdec.cpp transform_color_format.c
 
 LOCAL_C_INCLUDES := \
-	$(TOP)/hardware/aw/omxcore/inc/ \
-	$(TOP)/hardware/aw/vdec/ \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/omxcore/inc/ \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/vdec/ \
 	$(TOP)/frameworks/native/include/     \
+	$(TOP)/frameworks/native/include/media/openmax     \
 	$(CEDARX_TOP)/include     \
 	$(CEDARX_TOP)/include/include_cedarv     \
-	$(TOP)/hardware/aw \
-	$(TOP)/hardware/aw/include \
-
-
-#$(TOP)/frameworks/base/media/CedarX-Projects/CedarX/include/include_system/
+	$(TOP)/device/softwinner/cubieboard/hardware/aw \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/include \
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \
@@ -28,7 +26,7 @@ LOCAL_SHARED_LIBRARIES := \
 	libui       \
 	libdl \
 	libcedarxbase \
-	
+
 
 #libvdecoder
 LOCAL_MODULE:= libOmxVdec

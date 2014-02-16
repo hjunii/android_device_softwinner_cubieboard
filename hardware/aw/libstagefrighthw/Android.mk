@@ -24,7 +24,7 @@ LOCAL_C_INCLUDES += \
 endif
 
 LOCAL_C_INCLUDES += \
-        $(TOP)/hardware/aw
+        $(TOP)/device/softwinner/cubieboard/hardware/aw
 
 LOCAL_SHARED_LIBRARIES :=       \
         libbinder               \

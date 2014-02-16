@@ -26,11 +26,17 @@
 #include "libcedarv.h"
 #include "CDX_Resource_Manager.h"
 
-
 extern "C"
 {
 	OMX_API void* get_omx_component_factory_fn(void);
 }
+
+struct EnableAndroidNativeBuffersParams {
+    OMX_U32 nSize;
+    OMX_VERSIONTYPE nVersion;
+    OMX_U32 nPortIndex;
+    OMX_BOOL enable;
+};
 
 /*
  * Enumeration for the commands processed by the component
@@ -45,7 +51,10 @@ typedef enum ThrCmdType
     MarkBuf,
     Stop,
     FillBuf,
-    EmptyBuf
+    EmptyBuf,
+
+    VdrvNotifyEos = 0x100,
+    VdrvNotify_,
 } ThrCmdType;
 
 //////////////////////////////////////////////////////////////////////////////
@@ -58,10 +67,10 @@ typedef enum ThrCmdType
  */
 #define OMX_NOPORT                      0xFFFFFFFE
 #define NUM_IN_BUFFERS                  2        	// Input Buffers
-#define NUM_OUT_BUFFERS                 2       	// Output Buffers
+#define NUM_OUT_BUFFERS                 4       	// Output Buffers
 #define OMX_TIMEOUT                     10          // Timeout value in milisecond
 #define OMX_MAX_TIMEOUTS                160   		// Count of Maximum number of times the component can time out
-#define OMX_VIDEO_DEC_INPUT_BUFFER_SIZE (128*1024)
+#define OMX_VIDEO_DEC_INPUT_BUFFER_SIZE (2*1024*1024)
 
 #define AWOMX_PTS_JUMP_THRESH             (2000000)   //pts jump threshold to judge, unit:us
 /*
@@ -126,6 +135,11 @@ typedef struct VIDEO_PROFILE_LEVEL
     OMX_S32  nLevel;
 } VIDEO_PROFILE_LEVEL_TYPE;
 
+typedef enum OMX_VDRV_FEEDBACK_MSGTYPE
+{
+    OMX_VdrvFeedbackMsg_NotifyEos = OMX_CommandVendorStartUnused,   //vdeclib has drained all input data.
+    OMX_VdrvFeedbackMsg_Max = 0X7FFFFFFF,
+} OMX_VDRV_FEEDBACK_MSGTYPE;
 
 // OMX video decoder class
 class omx_vdec: public aw_omx_component
@@ -231,6 +245,13 @@ public:
                                 OMX_PTR                appData,
                                 void *                 eglImage);
 
+    OMX_ERRORTYPE send_vdrv_feedback_msg(OMX_VDRV_FEEDBACK_MSGTYPE nMsg,
+                                           OMX_U32         param1,
+                                           OMX_PTR         cmdData);
+private:
+    OMX_ERRORTYPE post_event(ThrCmdType eCmd,
+                           OMX_U32         param1,
+                           OMX_PTR         cmdData);
 public:
     OMX_STATETYPE                   m_state;
     OMX_U8                       	m_cRole[OMX_MAX_STRINGNAME_SIZE];
@@ -247,12 +268,19 @@ public:
     OMX_PARAM_BUFFERSUPPLIERTYPE    m_sInBufSupplier;
     OMX_PARAM_BUFFERSUPPLIERTYPE    m_sOutBufSupplier;
     pthread_t                       m_thread_id;
+    pthread_t                       m_vdrv_thread_id;
     int                             m_cmdpipe[2];
     int                             m_cmddatapipe[2];
+    int                             m_vdrv_cmdpipe[2];  //pipe connect main_thread and vdrv_thread
     BufferList                      m_sInBufList;
     BufferList                      m_sOutBufList;
     pthread_mutex_t					m_inBufMutex;
     pthread_mutex_t                 m_outBufMutex;
+
+    pthread_mutex_t                 m_pipeMutex;
+    sem_t                           m_vdrv_cmd_lock;    //for synchronise cmd.
+    sem_t                           m_sem_vbs_input;    //for notify vdrv_task vbs input.
+    sem_t                           m_sem_frame_output;    //for notify vdrv_task new frame is coming.
 
     //* for cedarv decoder.
     cedarv_decoder_t*               m_decoder;
@@ -264,6 +292,26 @@ public:
     //* for detect pts jump
     OMX_TICKS                       m_nInportPrevTimeStamp; //previous inPort vbv's time stamp, unit:us
     OMX_BOOL                        m_JumpFlag;
+
+    //for statistics
+    int64_t     mDecodeFrameTotalDuration;
+    int64_t     mDecodeOKTotalDuration;
+    int64_t     mDecodeNoFrameTotalDuration;
+    int64_t     mDecodeNoBitstreamTotalDuration;
+    int64_t     mDecodeOtherTotalDuration;
+    int64_t     mDecodeFrameTotalCount;
+    int64_t     mDecodeOKTotalCount;
+    int64_t     mDecodeNoFrameTotalCount;
+    int64_t     mDecodeNoBitstreamTotalCount;
+    int64_t     mDecodeOtherTotalCount;
+    int64_t     mDecodeFrameSmallAverageDuration;
+    int64_t     mDecodeFrameBigAverageDuration;
+    int64_t     mDecodeNoFrameAverageDuration;
+    int64_t     mDecodeNoBitstreamAverageDuration;
+    int64_t     mConvertTotalDuration;
+    int64_t     mConvertTotalCount;
+    int64_t     mConvertAverageDuration;
+
 };
 
 #endif // __OMX_VDEC_H__

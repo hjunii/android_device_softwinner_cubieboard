@@ -9,8 +9,9 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES:= src/omx_core_cmp.cpp src/aw_omx_core.c src/aw_registry_table.c
 
 LOCAL_C_INCLUDES := \
-	$(TOP)/hardware/aw/omxcore/inc/ \
-	$(TOP)/hardware/aw
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/omxcore/inc/ \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw \
+	$(TOP)/frameworks/native/include/media/openmax
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \

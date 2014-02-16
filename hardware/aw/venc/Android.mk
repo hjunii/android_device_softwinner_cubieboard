@@ -10,13 +10,14 @@ LOCAL_MODULE_TAGS := optional
 LOCAL_SRC_FILES:= omx_venc.cpp
 
 LOCAL_C_INCLUDES := \
-	$(TOP)/hardware/aw/omxcore/inc/ \
-	$(TOP)/hardware/aw/venc \
-	$(TOP)/hardware/aw/vencode/h264encLib/include \
-	$(TOP)/hardware/aw/include \
-	$(TOP)/hardware/aw \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/omxcore/inc/ \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/venc \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/vencode/h264encLib/include \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw/include \
+	$(TOP)/device/softwinner/cubieboard/hardware/aw \
 	$(CEDARX_TOP)/include/include_vencoder \
-	$(CEDARX_TOP)/include
+	$(CEDARX_TOP)/include \
+	$(TOP)/frameworks/native/include/media/openmax
 
 LOCAL_SHARED_LIBRARIES := \
 	libcutils \

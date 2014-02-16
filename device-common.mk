@@ -87,6 +87,16 @@ PRODUCT_PACKAGES := \
     bttest \
     com.android.future.usb.accessory
 
+PRODUCT_PACKAGES := \
+	libstagefrighthw \
+	libOmxCore \
+	libOmxVdec \
+	libOmxVenc \
+	libcedarv_base \
+	libcedarv_adapter \
+	libve \
+	libsunxi_alloc
+
 PRODUCT_CHARACTERISTICS := tablet
 
 # we have enough storage space to hold precise GC data
