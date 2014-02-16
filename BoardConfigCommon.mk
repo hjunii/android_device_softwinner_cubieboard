@@ -37,10 +37,6 @@ BOARD_SYSTEMIMAGE_PARTITION_SIZE := 524288000
 BOARD_USERDATAIMAGE_PARTITION_SIZE := 314572800
 BOARD_FLASH_BLOCK_SIZE := 4096
 
-# Build kernel from source
-TARGET_KERNEL_SOURCE := kernel/softwinner/common
-TARGET_KERNEL_CONFIG := cyanogenmod_cubieboard_defconfig
-
 # kernel
 BOARD_KERNEL_CMDLINE := init=/init loglevel=8
 BOARD_KERNEL_BASE := 0x40000000

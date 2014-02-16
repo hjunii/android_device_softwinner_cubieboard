@@ -14,11 +14,11 @@
 # limitations under the License.
 #
 
-#ifeq ($(TARGET_PREBUILT_KERNEL),)
-#LOCAL_KERNEL := device/softwinner/cubieboard/kernel
-#else
-#LOCAL_KERNEL := $(TARGET_PREBUILT_KERNEL)
-#endif
+ifeq ($(TARGET_PREBUILT_KERNEL),)
+LOCAL_KERNEL := device/softwinner/cubieboard/kernel
+else
+LOCAL_KERNEL := $(TARGET_PREBUILT_KERNEL)
+endif
 
 PRODUCT_AAPT_CONFIG := normal large tvdpi hdpi
 PRODUCT_AAPT_PREF_CONFIG := tvdpi
@@ -39,10 +39,16 @@ PRODUCT_DEFAULT_PROPERTY_OVERRIDES += \
 include frameworks/native/build/tablet-7in-hdpi-1024-dalvik-heap.mk
 
 PRODUCT_COPY_FILES += \
+	$(LOCAL_KERNEL):kernel \
     device/softwinner/cubieboard/fstab.sun4i:root/fstab.sun4i \
     device/softwinner/cubieboard/ueventd.sun4i.rc:root/ueventd.sun4i.rc \
     device/softwinner/cubieboard/init.sun4i.usb.rc:root/init.sun4i.usb.rc \
     device/softwinner/cubieboard/gps.conf:system/etc/gps.conf
+
+PRODUCT_COPY_FILES += \
+	device/softwinner/cubieboard/modules/mali.ko:system/lib/modules/mali.ko \
+	device/softwinner/cubieboard/modules/ump.ko:system/lib/modules/ump.ko \
+	device/softwinner/cubieboard/modules/8192cu.ko:system/lib/modules/8192cu.ko
 
 PRODUCT_COPY_FILES += \
 	device/softwinner/cubieboard/tablet_core_hardware.xml:system/etc/tablet_core_hardware.xml \
