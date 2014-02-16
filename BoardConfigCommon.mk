@@ -52,7 +52,7 @@ BOARD_HOSTAPD_PRIVATE_LIB   		:= lib_driver_cmd_rtl
 BOARD_WLAN_DEVICE 					:= rtl8192cu
 WIFI_DRIVER_MODULE_PATH     		:= "/system/lib/modules/8192cu.ko"
 WIFI_DRIVER_MODULE_NAME				:= "8192cu"
-WIFI_DRIVER_MODULE_ARG				:= "ifname=wlan0"
+WIFI_DRIVER_MODULE_ARG				:= "ifname=wlan0 if2name=p2p0"
 
 TARGET_BOOTLOADER_BOARD_NAME := crane
 TARGET_NO_BOOTLOADER := true
