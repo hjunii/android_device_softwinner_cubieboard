@@ -25,9 +25,14 @@ LOCAL_PRELINK_MODULE := false
 LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
 
 LOCAL_MODULE := gralloc.sun4i
-LOCAL_MODULE_TAGS := optional
+#LOCAL_MODULE_TAGS := optional
 
-LOCAL_SHARED_LIBRARIES := liblog libcutils libMali libGLESv1_CM libUMP
+SHARED_MEM_LIBS := libUMP
+#SHARED_MEM_LIBS := libion libhardware
+LOCAL_SHARED_LIBRARIES := liblog libcutils libMali libGLESv1_CM $(SHARED_MEM_LIBS)
+
+LOCAL_C_INCLUDES := system/core/include/ 
+# Include the UMP header files
 
 LOCAL_CFLAGS := -DLOG_TAG=\"gralloc\" -DGRALLOC_32_BITS -DSTANDARD_LINUX_SCREEN
 
