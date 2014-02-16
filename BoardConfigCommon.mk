@@ -23,6 +23,8 @@
 # inherit from the proprietary version
 # needed for BP-flashing updater extensions
 
+BOARD_BLUETOOTH_BDROID_BUILDCFG_INCLUDE_DIR ?= device/softwinner/cubieboard/bluetooth
+
 TARGET_BOARD_PLATFORM := sun4i
 
 TARGET_CPU_ABI := armeabi-v7a
@@ -62,8 +64,9 @@ TARGET_NO_BOOTLOADER := true
 
 BOARD_USES_GENERIC_INVENSENSE := false
 
-#BOARD_HAVE_BLUETOOTH := true
-#BOARD_HAVE_BLUETOOTH_BCM := true
+BOARD_HAVE_BLUETOOTH := true
+BOARD_HAVE_BLUETOOTH_BCM := true
+BLUETOOTH_HCI_USE_USB := true
 
 USE_OPENGL_RENDERER := true
 BOARD_EGL_CFG := device/softwinner/cubieboard/egl.cfg
