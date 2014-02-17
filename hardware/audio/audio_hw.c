@@ -686,9 +686,9 @@ typedef struct name_map_t
 
 static name_map audio_name_map[AUDIO_MAP_CNT] =
 {
-	{"audiocodec",		AUDIO_NAME_CODEC},
-	{"sndhdmi",	AUDIO_NAME_HDMI},
-	{"sndspdif",	AUDIO_NAME_SPDIF},
+	{"sunxicodec",      AUDIO_NAME_CODEC},
+	{"sunxisndhdmi",	AUDIO_NAME_HDMI},
+	{"sunxisndspdif",	AUDIO_NAME_SPDIF},
 };
 
 static int set_audio_devices_active(struct sunxi_audio_device *adev, int in_out, char * devices);

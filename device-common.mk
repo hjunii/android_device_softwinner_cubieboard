@@ -87,7 +87,7 @@ PRODUCT_PACKAGES := \
     bttest \
     com.android.future.usb.accessory
 
-PRODUCT_PACKAGES := \
+PRODUCT_PACKAGES += \
 	libstagefrighthw \
 	libOmxCore \
 	libOmxVdec \
