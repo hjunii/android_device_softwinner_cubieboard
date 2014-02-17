@@ -23,15 +23,6 @@ endif
 PRODUCT_AAPT_CONFIG := normal hdpi xhdpi
 PRODUCT_AAPT_PREF_CONFIG := xhdpi
 
-PRODUCT_PROPERTY_OVERRIDES := \
-    wifi.interface=wlan0 \
-    wifi.supplicant_scan_interval=15 \
-    drm.service.enabled=true \
-	audio.output.active=AUDIO_HDMI \
-	audio.input.active=AUDIO_CODEC \
-	net.dns1=8.8.8.8 \
-	net.dns2=8.8.4.4
-
 # Set default USB interface
 PRODUCT_DEFAULT_PROPERTY_OVERRIDES += \
     persist.sys.usb.config=mtp
