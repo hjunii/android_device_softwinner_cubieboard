@@ -33,7 +33,6 @@ USE_PROPRIETARY_AUDIO_EXTENSIONS := false
 
 # recovery
 TARGET_RECOVERY_UI_LIB := librecovery_ui_cubieboard
-TARGET_RECOVERY_PRE_COMMAND := "/bin/setup-reboot.sh"
 
 TARGET_RELEASETOOLS_EXTENSIONS := device/softwinner/cubieboard
 

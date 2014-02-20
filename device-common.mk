@@ -61,9 +61,6 @@ PRODUCT_COPY_FILES += \
     device/softwinner/cubieboard/Generic.kl:system/usr/keylayout/Generic.kl \
     device/softwinner/cubieboard/sun4i-ts.idc:system/usr/idc/sun4i-ts.idc
 
-PRODUCT_COPY_FILES += \
-	device/softwinner/cubieboard/setup-reboot.sh:root/bin/setup-reboot.sh
-
 PRODUCT_PACKAGES := \
 	hwcomposer.sun4i \
 	gralloc.sun4i \
