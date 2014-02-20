@@ -1,0 +1,31 @@
+From 52756b4556bf902240a0352d41d9f4ba4a4715ed Mon Sep 17 00:00:00 2001
+From: zombah <zombah@gmail.com>
+Date: Fri, 18 Oct 2013 22:42:28 +0400
+Subject: [PATCH 1/1] bta_hh: Change bus_type to BUS_USB for USB HCI
+
+* Bluetooth input devices have bus_type BUS_USB with USB HCI
+
+Change-Id: I8be55acd1e1a69cde23ee6edd4baab1a6fa84bf3
+---
+ btif/co/bta_hh_co.c | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/btif/co/bta_hh_co.c b/btif/co/bta_hh_co.c
+index b4ea4c2..9c57846 100644
+--- a/btif/co/bta_hh_co.c
++++ b/btif/co/bta_hh_co.c
+@@ -417,7 +417,11 @@ void bta_hh_co_send_hid_info(btif_hh_device_t *p_dev, char *dev_name, UINT16 ven
+     strncpy((char*)ev.u.create.name, dev_name, sizeof(ev.u.create.name) - 1);
+     ev.u.create.rd_size = dscp_len;
+     ev.u.create.rd_data = p_dscp;
++#if (BLUETOOTH_HCI_USE_USB == TRUE)
++    ev.u.create.bus = BUS_USB;
++#else
+     ev.u.create.bus = BUS_BLUETOOTH;
++#endif
+     ev.u.create.vendor = vendor_id;
+     ev.u.create.product = product_id;
+     ev.u.create.version = version;
+-- 
+1.8.3.2
+
