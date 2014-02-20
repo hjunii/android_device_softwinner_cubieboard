@@ -459,13 +459,13 @@ struct sunxi_stream_in {
 static void tinymix_print_enum(struct mixer_ctl *ctl, int print_all)
 {
     unsigned int num_enums;
-    char buffer[256];
+    char *buffer;
     unsigned int i;
 
     num_enums = mixer_ctl_get_num_enums(ctl);
 
     for (i = 0; i < num_enums; i++) {
-        mixer_ctl_get_enum_string(ctl, i, buffer, sizeof(buffer));
+        buffer = mixer_ctl_get_enum_string(ctl, i);
         if (print_all)
             printf("\t%s%s", mixer_ctl_get_value(ctl, 0) == (int)i ? ">" : "",
                    buffer);
@@ -479,7 +479,7 @@ static void tinymix_detail_control(struct mixer *mixer, unsigned int id,
     struct mixer_ctl *ctl;
     enum mixer_ctl_type type;
     unsigned int num_values;
-    char buffer[256];
+    char *buffer;
     unsigned int i;
     int min, max;
 
@@ -490,7 +490,7 @@ static void tinymix_detail_control(struct mixer *mixer, unsigned int id,
 
     ctl = mixer_get_ctl(mixer, id);
 
-    mixer_ctl_get_name(ctl, buffer, sizeof(buffer));
+    buffer = mixer_ctl_get_name(ctl);
     type = mixer_ctl_get_type(ctl);
     num_values = mixer_ctl_get_num_values(ctl);
 
@@ -533,7 +533,7 @@ static void tinymix_list_controls(struct mixer *mixer)
     struct mixer_ctl *ctl;
     const char *type;
     unsigned int num_ctls, num_values;
-    char buffer[256];
+    char *buffer;
     unsigned int i;
 
     num_ctls = mixer_get_num_ctls(mixer);
@@ -544,7 +544,7 @@ static void tinymix_list_controls(struct mixer *mixer)
     for (i = 0; i < num_ctls; i++) {
         ctl = mixer_get_ctl(mixer, i);
 
-        mixer_ctl_get_name(ctl, buffer, sizeof(buffer));
+        buffer = mixer_ctl_get_name(ctl);
         type = mixer_ctl_get_type_string(ctl);
         num_values = mixer_ctl_get_num_values(ctl);
         ALOGD("%d\t%s\t%d\t%-40s", i, type, num_values, buffer);
@@ -2975,8 +2975,8 @@ static int adev_open_output_stream(struct audio_hw_device *dev,
     config->channel_mask = out_get_channels(&out->stream.common);
     config->sample_rate = out_get_sample_rate(&out->stream.common);
 
-	ALOGV("+++++++++++++++ adev_open_output_stream: req_sample_rate: %d, fmt: %x, channel_count: %d",
-		*sample_rate, *format, *channels);
+	ALOGV("+++++++++++++++ adev_open_output_stream: req_sample_rate: %d, fmt: %x, channel_mask: %d",
+		config->sample_rate, config->format, config->channel_mask);
 
     *stream_out = &out->stream;
     return 0;
@@ -3732,9 +3732,9 @@ error_out:
             for (i = 0; i < cnt; i++) {
                     struct mixer_ctl* x = mixer_get_ctl(adev->mixer,i);
                     if (x != NULL) {
-                            char name[128];
-                            const char* type;
-                            mixer_ctl_get_name(x,name,sizeof(name));
+                            char *name;
+                            const char *type;
+                            name = mixer_ctl_get_name(x);
                             type = mixer_ctl_get_type_string(x);
                             ALOGD("#%d: '%s' [%s]",i,name,type);
                     }
