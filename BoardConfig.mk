@@ -28,13 +28,19 @@
 # the true camera library when the vendor tree is available.  Similarly,
 # we set USE_PROPRIETARY_AUDIO_EXTENSIONS to true in the proprietary variant as
 # well.
-USE_CAMERA_STUB := true
-USE_PROPRIETARY_AUDIO_EXTENSIONS := false
+
+TARGET_BOOTLOADER_BOARD_NAME := sun4i
+TARGET_BOOTLOADER_NAME := sun4i
+TARGET_BOARD_INFO_FILE := device/softwinner/cubieboard/board-info.txt
+
+BOARD_LIB_DUMPSTATE := libdumpstate.sun4i
 
 # recovery
 TARGET_RECOVERY_UI_LIB := librecovery_ui_cubieboard
 
 TARGET_RELEASETOOLS_EXTENSIONS := device/softwinner/cubieboard
+
+TARGET_RECOVERY_FSTAB = device/softwinner/cubieboard/recovery.fstab
 
 -include vendor/softwinner/cubieboard/BoardConfigVendor.mk
 include device/softwinner/cubieboard/BoardConfigCommon.mk

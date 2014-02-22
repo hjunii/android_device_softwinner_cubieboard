@@ -1,9 +1,7 @@
-# mount point	fstype		device
-
-/sdcard		    datamedia	/dev/null
-/system		    ext4		/dev/block/mmcblk0p3
-/cache		    ext4		/dev/block/mmcblk0p6
-/data		    ext4		/dev/block/mmcblk0p8
-/misc 		    emmc 		/dev/block/mmcblk0p4
-/boot		    emmc		/dev/block/mmcblk0p2
-/recovery	    emmc		/dev/block/mmcblk0p5
+/dev/block/mmcblk0p1    /environment    emmc        defaults        defaults
+/dev/block/mmcblk0p2    /boot           emmc        defaults        defaults
+/dev/block/mmcblk0p3    /system         ext4        defaults        defaults
+/dev/block/mmcblk0p4    /misc           emmc        defaults        defaults
+/dev/block/mmcblk0p5    /recovery       emmc        defaults        defaults
+/dev/block/mmcblk0p6    /cache          ext4        defaults        defaults
+/dev/block/mmcblk0p8    /data           ext4        defaults        defaults

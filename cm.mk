@@ -1,6 +1,3 @@
-# Release name
-PRODUCT_RELEASE_NAME := Nexus7
-
 # Boot animation
 TARGET_SCREEN_HEIGHT := 1920
 TARGET_SCREEN_WIDTH := 1080
@@ -14,9 +11,9 @@ $(call inherit-product, device/softwinner/cubieboard/full_cubieboard.mk)
 ## Device identifier. This must come after all inclusions
 PRODUCT_DEVICE := cubieboard
 PRODUCT_NAME := cm_cubieboard
-PRODUCT_BRAND := Google
+PRODUCT_BRAND := google
 PRODUCT_MODEL := Nexus 7
-PRODUCT_MANUFACTURER := Asus
+PRODUCT_MANUFACTURER := asus
 
 #Set build fingerprint / ID / Product Name ect.
-PRODUCT_BUILD_PROP_OVERRIDES += PRODUCT_NAME=nakasi TARGET_DEVICE=grouper BUILD_FINGERPRINT="google/nakasi/grouper:4.2.2/JDQ39/573038:user/release-keys" PRIVATE_BUILD_DESC="nakasi-user 4.2.2 JDQ39 573038 release-keys"
+PRODUCT_BUILD_PROP_OVERRIDES += PRODUCT_NAME=razor TARGET_DEVICE=flo BUILD_FINGERPRINT=google/razor/flo:4.3/JSS15R/804956:user/release-keys PRIVATE_BUILD_DESC="razor-user 4.3 JSS15R 804956 release-keys"
