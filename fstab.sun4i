@@ -11,4 +11,4 @@
 /dev/block/mmcblk0p5                                    /recovery           emmc      defaults                                                                            defaults
 /dev/block/mmcblk0p4                                    /misc               emmc      defaults                                                                            defaults
 
-/devices/platform/sw-ehci.1                             /storage/usbdisk    vfat      defaults                                                                            voldmanaged=usbdisk:auto
+/devices/platform/sw-ehci.1                             auto                auto      defaults                                                                            voldmanaged=usbdisk:auto

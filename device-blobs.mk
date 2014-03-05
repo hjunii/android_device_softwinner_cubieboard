@@ -21,7 +21,3 @@ PRODUCT_PACKAGES := \
 		libGLESv2_mali \
 		libMali \
 		libUMP
-
-# googleservice
-PRODUCT_COPY_FILES += \
-		$(call find-copy-subdir-files,*,$(LOCAL_PATH)/googleservice,system)

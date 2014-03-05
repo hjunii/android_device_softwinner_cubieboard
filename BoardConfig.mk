@@ -33,7 +33,7 @@ TARGET_BOOTLOADER_BOARD_NAME := sun4i
 TARGET_BOOTLOADER_NAME := sun4i
 TARGET_BOARD_INFO_FILE := device/softwinner/cubieboard/board-info.txt
 
-BOARD_LIB_DUMPSTATE := libdumpstate.sun4i
+BOARD_HAL_STATIC_LIBRARIES := libdumpstate.sun4i
 
 # recovery
 TARGET_RECOVERY_UI_LIB := librecovery_ui_cubieboard

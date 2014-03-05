@@ -1449,7 +1449,7 @@ static void select_output_device(struct sunxi_audio_device *adev)
 
 	int pa_should_on = speaker_on;
 
-	char prop_value[16];
+	char prop_value[PROPERTY_VALUE_MAX];
 	ret = property_get("audio.without.earpiece", prop_value, "");
 	if (ret > 0)
 	{
@@ -3689,7 +3689,7 @@ static int adev_open(const hw_module_t* module, const char* name,
     /* Set the default route before the PCM stream is opened */
     pthread_mutex_lock(&adev->lock);
 
-	char prop_value[16];
+	char prop_value[PROPERTY_VALUE_MAX];
 	adev->support_multi_ouput = false;
 	ret = property_get(PRO_AUDIO_MULTI_OUTPUT, prop_value, "");
 	if (ret > 0)

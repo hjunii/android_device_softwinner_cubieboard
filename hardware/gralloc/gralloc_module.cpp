@@ -67,11 +67,13 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
 
 	// if this handle was created in this process, then we keep it as is.
 	private_handle_t* hnd = (private_handle_t*)handle;
+#if 0
 	if (hnd->pid == getpid())
 	{
 		AERR("Unable to register handle 0x%x coming from different process: %d", (unsigned int)hnd, hnd->pid );
 		return 0;
 	}
+#endif
 
 	int retval = -EINVAL;
 

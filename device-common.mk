@@ -102,10 +102,6 @@ PRODUCT_COPY_FILES += \
 PRODUCT_COPY_FILES += \
     device/softwinner/cubieboard/media_codecs.xml:system/etc/media_codecs.xml
 
-# Bluetooth config file
-PRODUCT_COPY_FILES += \
-    system/bluetooth/data/main.nonsmartphone.conf:system/etc/bluetooth/main.conf
-
 # audio mixer paths
 PRODUCT_COPY_FILES += \
     device/softwinner/cubieboard/mixer_paths.xml:system/etc/mixer_paths.xml
@@ -127,5 +123,12 @@ PRODUCT_PROPERTY_OVERRIDES += \
 	ro.hwui.text_small_cache_height=1024 \
 	ro.hwui.text_large_cache_width=2048 \
 	ro.hwui.text_large_cache_height=1024
+
+# Graphics
+PRODUCT_PROPERTY_OVERRIDES += \
+	ro.zygote.disable_gl_preload=1 \
+	ro.opengles.version=131072 \
+	ro.bq.gpu_to_cpu_unsupported=1 \
+	debug.hwui.render_dirty_regions=false
 
 $(call inherit-product, frameworks/native/build/tablet-7in-xhdpi-2048-dalvik-heap.mk)

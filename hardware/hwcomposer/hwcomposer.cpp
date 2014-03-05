@@ -46,6 +46,8 @@
 #include <cutils/properties.h> 
 #include <utils/Timers.h>
 
+#include <GLES/gl.h>
+
 #define LOGV ALOGV
 #define LOGD ALOGD
 #define LOGE ALOGE
@@ -1059,26 +1061,18 @@ static int hwc_set_3d_parallax(sun4i_hwc_context_t *ctx,uint32_t value)
 static int hwc_prepare(hwc_composer_device_1_t *dev,
         size_t numDisplays, hwc_display_contents_1_t** displays) 
 {
-	for (size_t i=0 ; i<displays[0]->numHwLayers ; i++) 
-    {
-#if 0
-        if((displays[0]->hwLayers[i].format == HWC_FORMAT_MBYUV420)
-            ||(displays[0]->hwLayers[i].format == HWC_FORMAT_MBYUV422)
-            ||(displays[0]->hwLayers[i].format == HWC_FORMAT_YUV420PLANAR)
-            ||(displays[0]->hwLayers[i].format == HWC_FORMAT_DEFAULT))
-    	{
-        	displays[0]->hwLayers[i].compositionType = HWC_OVERLAY;
-    	}
-    	else
-    	{
-#endif
-        	displays[0]->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
-#if 0
-    	}
-#endif
-    }
+    hwc_display_contents_1_t* list = NULL;
+    if (numDisplays > 0) 
+        list = displays[0];
 
-	hwc_set_rect(dev, numDisplays, displays);
+    //if geometry is not changed, there is no need to do any work here
+    if (!list || (!(list->flags & HWC_GEOMETRY_CHANGED)))
+        return 0;
+
+	for (size_t i = 0 ; i < list->numHwLayers ; i++) 
+        list->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
+
+	//hwc_set_rect(dev, numDisplays, displays);
 	
     return 0;
 }
@@ -1089,12 +1083,25 @@ static int hwc_set(hwc_composer_device_1_t *dev,
     //for (size_t i=0 ; i<list->numHwLayers ; i++) {
     //    dump_layer(&list->hwLayers[i]);
     //}
-    EGLBoolean sucess = eglSwapBuffers((EGLDisplay)displays[0]->dpy,
-            (EGLSurface)displays[0]->sur);
-    if (!sucess) {
-        return HWC_EGL_ERROR;
+    
+    hwc_display_contents_1_t* list = displays[0];
+
+    if (list)
+    {
+        if (list->sur == NULL && list->dpy == NULL)
+            return HWC_EGL_ERROR;
+
+        unsigned char pixels[4];
+        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+        
+        EGLBoolean sucess = eglSwapBuffers((EGLDisplay)list->dpy,
+                (EGLSurface)list->sur);
+        if (!sucess) {
+            return HWC_EGL_ERROR;
+        }
     }
-    return 0;  //hwc_set_rect(dev, numDisplays, displays);
+
+    return 0;
 }
 
 static int hwc_set_mode(sun4i_hwc_context_t *ctx, e_hwc_mode_t mode)

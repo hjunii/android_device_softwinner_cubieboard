@@ -392,7 +392,7 @@ OMX_ERRORTYPE omx_vdec::component_init(OMX_STRING name)
     else if(!strncmp((char*)m_cName, "OMX.allwinner.video.decoder.vp8", OMX_MAX_STRINGNAME_SIZE))
 	{
 		strncpy((char *)m_cRole, "video_decoder.vp8", OMX_MAX_STRINGNAME_SIZE);
-		m_eCompressionFormat = OMX_VIDEO_CodingVPX;
+		m_eCompressionFormat = OMX_VIDEO_CodingVP8;
 		m_streamInfo.format  = CEDARV_STREAM_FORMAT_VP8;
 	}
 	else
