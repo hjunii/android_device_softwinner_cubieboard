@@ -362,6 +362,7 @@ OMX_ERRORTYPE omx_vdec::component_init(OMX_STRING name)
 		m_eCompressionFormat = OMX_VIDEO_CodingMPEG4;
 		m_streamInfo.format  = CEDARV_STREAM_FORMAT_MPEG4;
 		m_streamInfo.sub_format = CEDARV_MPEG4_SUB_FORMAT_XVID;
+        m_streamInfo.container_format = CEDARV_CONTAINER_FORMAT_ASF;
 	}
 	else if(!strncmp((char*)m_cName, "OMX.allwinner.video.decoder.h263", OMX_MAX_STRINGNAME_SIZE))
 	{

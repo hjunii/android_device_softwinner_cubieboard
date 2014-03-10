@@ -226,10 +226,12 @@ static int gralloc_unregister_buffer(gralloc_module_t const* module, buffer_hand
 
 		pthread_mutex_unlock(&s_map_lock);
 	}
+#if 0
 	else
 	{
 		AERR( "Trying to unregister buffer 0x%x from process %d that was not created in current process: %d", (unsigned int)hnd, hnd->pid, getpid());
 	}
+#endif
 
 	return 0;
 }

@@ -34,7 +34,7 @@ LOCAL_SHARED_LIBRARIES := liblog libcutils libMali libGLESv1_CM $(SHARED_MEM_LIB
 LOCAL_C_INCLUDES := system/core/include/ 
 # Include the UMP header files
 
-LOCAL_CFLAGS := -DLOG_TAG=\"gralloc\" -DGRALLOC_32_BITS -DSTANDARD_LINUX_SCREEN
+LOCAL_CFLAGS := -DLOG_TAG=\"gralloc\" -DGRALLOC_32_BITS #-DSTANDARD_LINUX_SCREEN
 
 LOCAL_SRC_FILES := \
 	gralloc_module.cpp \
