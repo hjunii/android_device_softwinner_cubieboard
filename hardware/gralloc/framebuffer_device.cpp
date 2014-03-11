@@ -284,10 +284,10 @@ int init_frame_buffer_locked(struct private_module_t* module)
 		AWAR( "fbdev pixclock is zero for fd: %d", fd );
 	}
 
-	if (refreshRate == 0)
-	{
-		refreshRate = 60*1000;  // 60 Hz
-	}
+	//if (refreshRate == 0)
+	//{
+		refreshRate = 30*1000;  // 30 Hz
+	//}
 
 	if (int(info.width) <= 0 || int(info.height) <= 0)
 	{
