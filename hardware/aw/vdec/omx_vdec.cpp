@@ -228,6 +228,7 @@ omx_vdec::omx_vdec()
 	pthread_mutex_init(&m_outBufMutex, NULL);
 
     pthread_mutex_init(&m_pipeMutex, NULL);
+    pthread_mutex_init(&m_flushMutex, NULL);
     sem_init(&m_vdrv_cmd_lock,0,0);
     sem_init(&m_sem_vbs_input,0,0);
     sem_init(&m_sem_frame_output,0,0);
@@ -307,6 +308,7 @@ omx_vdec::~omx_vdec()
     pthread_mutex_destroy(&m_outBufMutex);
 
     pthread_mutex_destroy(&m_pipeMutex);
+    pthread_mutex_destroy(&m_flushMutex);
     sem_destroy(&m_vdrv_cmd_lock);
     sem_destroy(&m_sem_vbs_input);
     sem_destroy(&m_sem_frame_output);
@@ -2583,6 +2585,45 @@ static void* ComponentThread(void* pThreadData)
                     		pSelf->m_sOutBufList.nReadPos = 0;
                     }
 
+                    ALOGV("Flush decoder");
+                    while (1)
+                    {
+                        pthread_mutex_lock(&pSelf->m_flushMutex);
+                        nRetSemGetValue=sem_getvalue(&pSelf->m_sem_frame_output, &nSemVal);
+                        //ALOGV("m_sem_frame_output - nRetSemGetValue = %d, nSemVal = %d", nRetSemGetValue, nSemVal);
+                        if(0 == nRetSemGetValue)
+                        {
+                            if(0 == nSemVal)
+                            {
+                                if (ve_mutex_lock(&pSelf->m_cedarv_req_ctx) < 0)
+                                    continue;
+                                pSelf->m_decoder->ioctrl(pSelf->m_decoder, CEDARV_COMMAND_JUMP, 0);
+                                ve_mutex_unlock(&pSelf->m_cedarv_req_ctx);
+                                sem_post(&pSelf->m_sem_frame_output);
+                            }
+                        }
+
+                        nRetSemGetValue=sem_getvalue(&pSelf->m_sem_vbs_input, &nSemVal);
+                        //ALOGV("m_sem_vbs_input - nRetSemGetValue = %d, nSemVal = %d", nRetSemGetValue, nSemVal);
+                        if(0 == nRetSemGetValue)
+                        {
+                            if(0 == nSemVal)
+                            {
+                                pthread_mutex_unlock(&pSelf->m_flushMutex);
+                                break;
+                            }
+                        }
+                        pthread_mutex_unlock(&pSelf->m_flushMutex);
+                    }
+                    while (pSelf->m_decoder->picture_ready(pSelf->m_decoder))
+                    {
+                        pSelf->m_decoder->display_request(pSelf->m_decoder, &picture);
+                        ALOGV("Flush picture.pts = %lld", picture.pts);
+                        pSelf->m_decoder->display_release(pSelf->m_decoder, picture.id);
+                    }
+
+                    ALOGV("Flush decoder done");
+ 
                 	pthread_mutex_unlock(&pSelf->m_outBufMutex);
 
 					pSelf->m_Callbacks.EventHandler(&pSelf->m_cmp, pSelf->m_pAppData, OMX_EventCmdComplete, OMX_CommandFlush, 0x1, NULL);
@@ -2688,7 +2729,11 @@ static void* ComponentThread(void* pThreadData)
             if(OMX_TRUE == pSelf->m_JumpFlag)
             {
                 ALOGV("reset vdeclib for jump!");
-                //pSelf->m_decoder->ioctrl(pSelf->m_decoder, CEDARV_COMMAND_JUMP, 0);
+  				ve_mutex_lock(&pSelf->m_cedarv_req_ctx);
+                pthread_mutex_lock(&pSelf->m_flushMutex);
+                pSelf->m_decoder->ioctrl(pSelf->m_decoder, CEDARV_COMMAND_JUMP, 0);
+                pthread_mutex_unlock(&pSelf->m_flushMutex);
+  				ve_mutex_unlock(&pSelf->m_cedarv_req_ctx);
                 pSelf->m_JumpFlag = OMX_FALSE;
             }
             //fill buffer first
@@ -2998,6 +3043,7 @@ static void* ComponentThread(void* pThreadData)
             {
                 if(nVdrvNotifyEosFlag)
                 {
+                    nVdrvNotifyEosFlag = 0;
                     if(eos!=OMX_TRUE)
                     {
                         ALOGW("fatal error! why eos[%d], nVdrvNotifyEosFlag[%d]?", eos, nVdrvNotifyEosFlag);
@@ -3246,7 +3292,11 @@ __EXECUTE_CMD_DONE:
           #if (OPEN_STATISTICS)
 			nTimeUs1 = OMX_GetNowUs();
           #endif
+            ALOGV("(f:%s, l:%d) decode start", __FUNCTION__, __LINE__);
+            pthread_mutex_lock(&pSelf->m_flushMutex);
 			decodeResult = pSelf->m_decoder->decode(pSelf->m_decoder);
+            pthread_mutex_unlock(&pSelf->m_flushMutex);
+            ALOGV("(f:%s, l:%d) decode end", __FUNCTION__, __LINE__);
           #if (OPEN_STATISTICS)
             nTimeUs2 = OMX_GetNowUs();
             if(decodeResult == CEDARV_RESULT_FRAME_DECODED || decodeResult == CEDARV_RESULT_KEYFRAME_DECODED)
@@ -3294,6 +3344,7 @@ __EXECUTE_CMD_DONE:
 			{
                 if(nEosFlag)
                 {
+                    nEosFlag = OMX_FALSE;
                 	//set eof flag, MediaCodec use this flag
                 	//to determine whether a playback is finished.
                 	ALOGV("(f:%s, l:%d) when eos, vdrvtask meet no_bitstream, all frames have decoded, notify ComponentThread eos!", __FUNCTION__, __LINE__);

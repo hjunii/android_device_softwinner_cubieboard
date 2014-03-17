@@ -278,6 +278,7 @@ public:
     pthread_mutex_t                 m_outBufMutex;
 
     pthread_mutex_t                 m_pipeMutex;
+    pthread_mutex_t                 m_flushMutex;
     sem_t                           m_vdrv_cmd_lock;    //for synchronise cmd.
     sem_t                           m_sem_vbs_input;    //for notify vdrv_task vbs input.
     sem_t                           m_sem_frame_output;    //for notify vdrv_task new frame is coming.
