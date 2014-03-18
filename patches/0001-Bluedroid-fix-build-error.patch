@@ -1,0 +1,26 @@
+From cab701669f191847ec981c954f521c18054d7af3 Mon Sep 17 00:00:00 2001
+From: hjunii <hjunii@gmail.com>
+Date: Tue, 18 Mar 2014 19:26:30 +0900
+Subject: [PATCH 1/1] Bluedroid: fix build error
+
+Change-Id: Iee69b057efbc44ecec52b5e168a6e46cfceafd0a
+---
+ hci/Android.mk | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/hci/Android.mk b/hci/Android.mk
+index f4af391..3d61371 100644
+--- a/hci/Android.mk
++++ b/hci/Android.mk
+@@ -27,6 +27,8 @@ LOCAL_CFLAGS += -DHCI_H2
+ 
+ LOCAL_SRC_FILES += \
+         src/usb.c \
++        src/userial_mct.c \
++        src/hci_mct.c \
+         src/hci_h4.c
+ 
+ LOCAL_C_INCLUDES += \
+-- 
+1.8.3.2
+
