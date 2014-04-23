@@ -38,7 +38,7 @@
 #include "gralloc_helper.h"
 
 // numbers of buffers for page flipping
-#define NUM_BUFFERS 2
+#define NUM_BUFFERS 4
 
 enum
 {
@@ -284,10 +284,10 @@ int init_frame_buffer_locked(struct private_module_t* module)
 		AWAR( "fbdev pixclock is zero for fd: %d", fd );
 	}
 
-	//if (refreshRate == 0)
-	//{
-		refreshRate = 30*1000;  // 30 Hz
-	//}
+	if (refreshRate == 0)
+	{
+		refreshRate = 60*1000;  // 60 Hz
+	}
 
 	if (int(info.width) <= 0 || int(info.height) <= 0)
 	{
@@ -361,7 +361,7 @@ int init_frame_buffer_locked(struct private_module_t* module)
 
 	// Create a "fake" buffer object for the entire frame buffer memory, and store it in the module
 	module->framebuffer = new private_handle_t(private_handle_t::PRIV_FLAGS_FRAMEBUFFER, fbSize, intptr_t(vaddr),
-	                                           0, dup(fd), 0);
+	                                           0, dup(fd), 0, 0, 0, 0, 0, 0, 0);
 
 	module->numBuffers = info.yres_virtual / info.yres;
 	module->bufferMask = 0;

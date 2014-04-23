@@ -116,6 +116,13 @@ struct private_handle_t
 	int     fd;
 	int     offset;
 
+    int     width;
+    int     height;
+    int     format;
+    int     stride;
+    int     usage;
+    int     paddr;
+
 #if GRALLOC_ARM_DMA_BUF_MODULE
 	int     ion_client;
 	struct ion_handle *ion_hnd;
@@ -136,7 +143,7 @@ struct private_handle_t
 	static const int sMagic = 0x3141592;
 
 #if GRALLOC_ARM_UMP_MODULE
-	private_handle_t(int flags, int size, int base, int lock_state, ump_secure_id secure_id, ump_handle handle):
+	private_handle_t(int flags, int size, int base, int lock_state, ump_secure_id secure_id, ump_handle handle, int w, int h, int format, int stride, int usage, int paddr):
 		magic(sMagic),
 		flags(flags),
 		size(size),
@@ -147,7 +154,13 @@ struct private_handle_t
 		ump_id((int)secure_id),
 		ump_mem_handle((int)handle),
 		fd(0),
-		offset(0)
+		offset(0),
+        width(w),
+        height(h),
+        format(format),
+        stride(stride),
+        usage(usage),
+        paddr(paddr)
 #if GRALLOC_ARM_DMA_BUF_MODULE
 		,ion_client(-1),
 		ion_hnd(NULL)
@@ -161,7 +174,7 @@ struct private_handle_t
 #endif
 
 #if GRALLOC_ARM_DMA_BUF_MODULE
-	private_handle_t(int flags, int size, int base, int lock_state):
+	private_handle_t(int flags, int size, int base, int lock_state, int w, int h, int format, int stride, int usage, int paddr):
 		magic(sMagic),
 		flags(flags),
 		size(size),
@@ -175,7 +188,13 @@ struct private_handle_t
 #endif
 		fd(0),
 		offset(0),
-		ion_client(-1),
+        width(w),
+        height(h),
+        format(format),
+        stride(stride),
+        usage(usage),
+        paddr(paddr),
+        ion_client(-1),
 		ion_hnd(NULL)
 
 	{
@@ -186,7 +205,7 @@ struct private_handle_t
 
 #endif
 
-	private_handle_t(int flags, int size, int base, int lock_state, int fb_file, int fb_offset):
+	private_handle_t(int flags, int size, int base, int lock_state, int fb_file, int fb_offset, int w, int h, int format, int stride, int usage, int paddr):
 		magic(sMagic),
 		flags(flags),
 		size(size),
@@ -199,7 +218,13 @@ struct private_handle_t
 		ump_mem_handle((int)UMP_INVALID_MEMORY_HANDLE),
 #endif
 		fd(fb_file),
-		offset(fb_offset)
+		offset(fb_offset),
+        width(w),
+        height(h),
+        format(format),
+        stride(stride),
+        usage(usage),
+        paddr(paddr)
 #if GRALLOC_ARM_DMA_BUF_MODULE
 		,ion_client(-1),
 		ion_hnd(NULL)

@@ -20,8 +20,8 @@ else
 LOCAL_KERNEL := $(TARGET_PREBUILT_KERNEL)
 endif
 
-PRODUCT_AAPT_CONFIG := normal hdpi xhdpi
-PRODUCT_AAPT_PREF_CONFIG := xhdpi
+PRODUCT_AAPT_CONFIG := normal large tvdpi hdpi
+PRODUCT_AAPT_PREF_CONFIG := tvdpi
 
 # Set default USB interface
 PRODUCT_DEFAULT_PROPERTY_OVERRIDES += \
@@ -37,7 +37,8 @@ PRODUCT_COPY_FILES += \
 PRODUCT_COPY_FILES += \
 	device/softwinner/cubieboard/modules/mali.ko:system/lib/modules/mali.ko \
 	device/softwinner/cubieboard/modules/ump.ko:system/lib/modules/ump.ko \
-	device/softwinner/cubieboard/modules/8192cu.ko:system/lib/modules/8192cu.ko
+	device/softwinner/cubieboard/modules/8192cu.ko:system/lib/modules/8192cu.ko \
+	device/softwinner/cubieboard/modules/disp_ump.ko:system/lib/modules/disp_ump.ko
 
 PRODUCT_COPY_FILES += \
 	frameworks/native/data/etc/handheld_core_hardware.xml:system/etc/permissions/handheld_core_hardware.xml \
@@ -128,7 +129,6 @@ PRODUCT_PROPERTY_OVERRIDES += \
 PRODUCT_PROPERTY_OVERRIDES += \
 	ro.zygote.disable_gl_preload=1 \
 	ro.opengles.version=131072 \
-	ro.bq.gpu_to_cpu_unsupported=1 \
 	debug.hwui.render_dirty_regions=false
 
 $(call inherit-product, frameworks/native/build/tablet-7in-xhdpi-2048-dalvik-heap.mk)

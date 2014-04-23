@@ -93,7 +93,7 @@ static int __ump_alloc_should_fail()
 #endif
 
 
-static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage, buffer_handle_t* pHandle)
+static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage, int w, int h, int format, int stride, buffer_handle_t* pHandle)
 {
 #if GRALLOC_ARM_DMA_BUF_MODULE
 	{
@@ -103,7 +103,7 @@ static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage, buf
 		int shared_fd;
 		int ret;
 
-		ret = ion_alloc( m->ion_client, size, 0, ION_HEAP_SYSTEM_MASK, &ion_hnd );
+		ret = ion_alloc( m->ion_client, size, 0, ION_HEAP_SYSTEM_MASK, 0, &ion_hnd );
 		if ( ret != 0) 
 		{
 			AERR("Failed to ion_alloc from ion_client:%d", m->ion_client);
@@ -127,7 +127,7 @@ static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage, buf
 			return -1;
 		}
 
-		private_handle_t *hnd = new private_handle_t( private_handle_t::PRIV_FLAGS_USES_ION, size, (int)cpu_ptr, private_handle_t::LOCK_STATE_MAPPED );
+		private_handle_t *hnd = new private_handle_t( private_handle_t::PRIV_FLAGS_USES_ION, size, (int)cpu_ptr, private_handle_t::LOCK_STATE_MAPPED, w, h, format, stride, usage, 0 );
 
 		if ( NULL != hnd )
 		{
@@ -189,7 +189,7 @@ static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage, buf
 					if (UMP_INVALID_SECURE_ID != ump_id)
 					{
 						private_handle_t* hnd = new private_handle_t(private_handle_t::PRIV_FLAGS_USES_UMP, size, (int)cpu_ptr,
-																	 private_handle_t::LOCK_STATE_MAPPED, ump_id, ump_mem_handle);
+																	 private_handle_t::LOCK_STATE_MAPPED, ump_id, ump_mem_handle, w, h, format, stride, usage, 0);
 						if (NULL != hnd)
 						{
 							*pHandle = hnd;
@@ -225,7 +225,7 @@ static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage, buf
 
 }
 
-static int gralloc_alloc_framebuffer_locked(alloc_device_t* dev, size_t size, int usage, buffer_handle_t* pHandle)
+static int gralloc_alloc_framebuffer_locked(alloc_device_t* dev, size_t size, int usage, int w, int h, int format, int stride, buffer_handle_t* pHandle)
 {
 	private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
     
@@ -250,7 +250,7 @@ static int gralloc_alloc_framebuffer_locked(alloc_device_t* dev, size_t size, in
 		// screen when post is called.
 		int newUsage = (usage & ~GRALLOC_USAGE_HW_FB) | GRALLOC_USAGE_HW_2D;
 		AERR( "fallback to single buffering. Virtual Y-res too small %d", m->info.yres );
-		return gralloc_alloc_buffer(dev, bufferSize, newUsage, pHandle);
+		return gralloc_alloc_buffer(dev, bufferSize, newUsage, w, h, format, stride, pHandle);
 	}
 
 	if (bufferMask >= ((1LU<<numBuffers)-1))
@@ -260,6 +260,7 @@ static int gralloc_alloc_framebuffer_locked(alloc_device_t* dev, size_t size, in
 	}
 
 	int vaddr = m->framebuffer->base;
+    int paddr = m->finfo.smem_start;
 	// find a free slot
 	for (uint32_t i=0 ; i<numBuffers ; i++)
 	{
@@ -269,21 +270,23 @@ static int gralloc_alloc_framebuffer_locked(alloc_device_t* dev, size_t size, in
 			break;
 		}
 		vaddr += bufferSize;
+        paddr += bufferSize;
 	}
 
 	// The entire framebuffer memory is already mapped, now create a buffer object for parts of this memory
 	private_handle_t* hnd = new private_handle_t(private_handle_t::PRIV_FLAGS_FRAMEBUFFER, size, vaddr,
-	                                             0, dup(m->framebuffer->fd), vaddr - m->framebuffer->base);
+	                                             0, dup(m->framebuffer->fd), vaddr - m->framebuffer->base,
+                                                 w, h, format, stride, usage, paddr);
 	*pHandle = hnd;
 
 	return 0;
 }
 
-static int gralloc_alloc_framebuffer(alloc_device_t* dev, size_t size, int usage, buffer_handle_t* pHandle)
+static int gralloc_alloc_framebuffer(alloc_device_t* dev, size_t size, int usage, int w, int h, int format, int stride, buffer_handle_t* pHandle)
 {
 	private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
 	pthread_mutex_lock(&m->lock);
-	int err = gralloc_alloc_framebuffer_locked(dev, size, usage, pHandle);
+	int err = gralloc_alloc_framebuffer_locked(dev, size, usage, w, h, format, stride, pHandle);
 	pthread_mutex_unlock(&m->lock);
 	return err;
 }
@@ -341,11 +344,11 @@ static int alloc_device_alloc(alloc_device_t* dev, int w, int h, int format, int
 	int err;
 	if (usage & GRALLOC_USAGE_HW_FB)
 	{
-		err = gralloc_alloc_framebuffer(dev, size, usage, pHandle);
+		err = gralloc_alloc_framebuffer(dev, size, usage, w, h, format, stride, pHandle);
 	}
 	else
 	{
-		err = gralloc_alloc_buffer(dev, size, usage, pHandle);
+		err = gralloc_alloc_buffer(dev, size, usage, w, h, format, stride, pHandle);
 	}
 
 	if (err < 0)
