@@ -22,13 +22,3 @@
 
 add_lunch_combo cm_cubieboard-eng
 add_lunch_combo cm_cubieboard-userdebug
-
-echo "Apply patch to external/bluetooth/bluedroid"
-echo -n "Apply patch 0001-Bluedroid-fix-build-error.patch"
-(cd external/bluetooth/bluedroid; git am ../../../device/softwinner/cubieboard/patches/0001-Bluedroid-fix-build-error.patch) > /dev/null 2>&1
-if [ $? == 0 ]; then
-    echo "     [DONE]"
-else
-    (cd external/bluetooth/bluedroid; git am --abort)
-    echo "     [FAIL]"
-fi
