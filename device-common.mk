@@ -56,12 +56,6 @@ PRODUCT_COPY_FILES += \
 	frameworks/native/data/etc/android.hardware.audio.low_latency.xml:system/etc/permissions/android.hardware.audio.low_latency.xml \
 	frameworks/native/data/etc/android.hardware.bluetooth_le.xml:system/etc/permissions/android.hardware.bluetooth_le.xml
 
-PRODUCT_COPY_FILES += \
-    device/softwinner/cubieboard/sun4i-keyboard.kl:system/usr/keylayout/sun4i-keyboard.kl \
-    device/softwinner/cubieboard/sun4i-ir.kl:system/usr/keylayout/sun4i-ir.kl \
-    device/softwinner/cubieboard/Generic.kl:system/usr/keylayout/Generic.kl \
-    device/softwinner/cubieboard/sun4i-ts.idc:system/usr/idc/sun4i-ts.idc
-
 PRODUCT_PACKAGES := \
 	hwcomposer.sun4i \
 	gralloc.sun4i \
