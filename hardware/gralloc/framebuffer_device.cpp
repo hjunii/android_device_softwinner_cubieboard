@@ -38,7 +38,7 @@
 #include "gralloc_helper.h"
 
 // numbers of buffers for page flipping
-#define NUM_BUFFERS 4
+#define NUM_BUFFERS NUM_FB_BUFFERS 
 
 enum
 {
@@ -274,8 +274,8 @@ int init_frame_buffer_locked(struct private_module_t* module)
 	{
 		refreshRate = 1000000000000000LLU /
 		(
-			uint64_t( info.upper_margin + info.lower_margin + info.yres )
-			* ( info.left_margin  + info.right_margin + info.xres )
+			uint64_t( info.upper_margin + info.lower_margin + info.yres + info.hsync_len )
+			* ( info.left_margin  + info.right_margin + info.xres + info.vsync_len )
 			* info.pixclock
 		);
 	}
@@ -365,6 +365,16 @@ int init_frame_buffer_locked(struct private_module_t* module)
 
 	module->numBuffers = info.yres_virtual / info.yres;
 	module->bufferMask = 0;
+	
+#if GRALLOC_ARM_UMP_MODULE
+	#ifdef IOCTL_GET_FB_UMP_SECURE_ID
+	ioctl(fd, IOCTL_GET_FB_UMP_SECURE_ID, &module->framebuffer->ump_id);
+	#endif
+	if ( (int)UMP_INVALID_SECURE_ID != module->framebuffer->ump_id )
+	{
+		AINF("framebuffer accessed with UMP secure ID %i\n", module->framebuffer->ump_id);
+	}
+#endif
 
 	return 0;
 }

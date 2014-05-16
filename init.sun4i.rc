@@ -44,9 +44,7 @@ on post-fs-data
 
 on boot
     # insmod mali driver
-    insmod /system/lib/modules/ump.ko
     insmod /system/lib/modules/mali.ko
-    insmod /system/lib/modules/disp_ump.ko
 
     # Interactive governor settings
     chown system system /sys/devices/system/cpu/cpufreq/interactive/boost_factor

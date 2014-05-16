@@ -76,7 +76,7 @@ static int _hwcdev_is_valid_layer(hwc_layer_1_t *layer)
     {
         return 0;
     }
-    
+ 
     if (!_hwcdev_is_valid_format(handle->format))
     {
         return 0;
@@ -346,7 +346,7 @@ static int _hwcdev_setup_layer(SUNXI_hwcdev_context_t *ctx, __disp_layer_info_t 
     private_handle_t *handle = (private_handle_t *)layer->handle;
 
     memset(layer_info, 0, sizeof(__disp_layer_info_t));
-    
+ 
     switch(handle->format)
     {
         case HAL_PIXEL_FORMAT_RGBA_8888:
@@ -427,17 +427,7 @@ static int _hwcdev_setup_layer(SUNXI_hwcdev_context_t *ctx, __disp_layer_info_t 
         layer_info->fb.pre_multiply = 1;
     }
 
-    if (handle->paddr == 0 && handle->ump_id > 0)
-    {
-        unsigned long paddr = 0;
-        unsigned long args[2];
-        args[0] = (unsigned long) handle->ump_id;
-        args[1] = (unsigned long) &paddr;
-        ioctl(ctx->fb_fp[0], GET_UMP_PHYSICAL_ADDRESS, (unsigned long) args);
-        layer_info->fb.addr[0] = paddr;
-    }
-    else
-        layer_info->fb.addr[0] = handle->paddr;
+    layer_info->fb.addr[0] = handle->paddr;
     ALOGV("fb.addr = 0x%x\n",layer_info->fb.addr[0]);
     layer_info->fb.size.width = handle->stride;
     layer_info->fb.size.height = handle->height;
