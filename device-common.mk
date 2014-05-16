@@ -36,9 +36,7 @@ PRODUCT_COPY_FILES += \
 
 PRODUCT_COPY_FILES += \
 	device/softwinner/cubieboard/modules/mali.ko:system/lib/modules/mali.ko \
-	device/softwinner/cubieboard/modules/ump.ko:system/lib/modules/ump.ko \
 	device/softwinner/cubieboard/modules/8192cu.ko:system/lib/modules/8192cu.ko \
-	device/softwinner/cubieboard/modules/disp_ump.ko:system/lib/modules/disp_ump.ko
 
 PRODUCT_COPY_FILES += \
 	frameworks/native/data/etc/handheld_core_hardware.xml:system/etc/permissions/handheld_core_hardware.xml \
