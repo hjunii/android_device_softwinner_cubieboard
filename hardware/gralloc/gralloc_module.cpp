@@ -65,17 +65,13 @@ static int gralloc_register_buffer(gralloc_module_t const* module, buffer_handle
 		return -EINVAL;
 	}
 
-	// if this handle was created in this process, then we keep it as is.
 	private_handle_t* hnd = (private_handle_t*)handle;
-	if (hnd->pid == getpid())
-	{
-		AERR("Unable to register handle 0x%x coming from different process: %d", (unsigned int)hnd, hnd->pid );
-		return 0;
-	}
 
 	int retval = -EINVAL;
 
 	pthread_mutex_lock(&s_map_lock);
+
+    hnd->pid = getpid();
 
 #if GRALLOC_ARM_UMP_MODULE
 	if (!s_ump_is_open)
@@ -200,7 +196,7 @@ static int gralloc_unregister_buffer(gralloc_module_t const* module, buffer_hand
 	{
 		AERR( "Can't unregister buffer 0x%x as it is a framebuffer", (unsigned int)handle );
 	}
-	else if (hnd->pid != getpid()) // never unmap buffers that were not created in this process
+	else if (hnd->pid == getpid()) // never unmap buffers that were not created in this process
 	{
 		pthread_mutex_lock(&s_map_lock);
 
