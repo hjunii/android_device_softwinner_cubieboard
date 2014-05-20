@@ -1,0 +1,72 @@
+From 7526d7a7fd6ca699ab74bce44eafb8378315c6c4 Mon Sep 17 00:00:00 2001
+From: hjunii <hjunii@gmail.com>
+Date: Wed, 21 May 2014 01:19:15 +0900
+Subject: [PATCH 1/1] sunxi ion patch
+
+Change-Id: I348d82760a28358a9c436d0a109cd1f20bcd28b3
+---
+ include/ion/ion.h |  2 +-
+ libion/ion.c      | 23 +++++++++++++++++++++++
+ 2 files changed, 24 insertions(+), 1 deletion(-)
+
+diff --git a/include/ion/ion.h b/include/ion/ion.h
+index 018c0a1..0294c5e 100644
+--- a/include/ion/ion.h
++++ b/include/ion/ion.h
+@@ -37,7 +37,7 @@ int ion_map(int fd, struct ion_handle *handle, size_t length, int prot,
+             int flags, off_t offset, unsigned char **ptr, int *map_fd);
+ int ion_share(int fd, struct ion_handle *handle, int *share_fd);
+ int ion_import(int fd, int share_fd, struct ion_handle **handle);
+-
++int ion_getphyadr(int fd, void *handle_fd);
+ __END_DECLS
+ 
+ #endif /* __SYS_CORE_ION_H */
+diff --git a/libion/ion.c b/libion/ion.c
+index 4cd1697..abd2870 100644
+--- a/libion/ion.c
++++ b/libion/ion.c
+@@ -29,6 +29,13 @@
+ 
+ #include <linux/ion.h>
+ #include <ion/ion.h>
++#define ION_IOC_SUNXI_PHYS_ADDR             7
++
++typedef struct {
++        void *handle;
++        unsigned int phys_addr;
++        unsigned int size;
++} sunxi_phys_data;
+ 
+ int ion_open()
+ {
+@@ -47,6 +54,8 @@ static int ion_ioctl(int fd, int req, void *arg)
+ {
+         int ret = ioctl(fd, req, arg);
+         if (ret < 0) {
++		struct ion_allocation_data *p = arg;
++		if(p->heap_mask != ION_HEAP_SYSTEM_CONTIG_MASK)
+                 ALOGE("ioctl %x failed with code %d: %s\n", req,
+                        ret, strerror(errno));
+                 return -errno;
+@@ -160,3 +169,17 @@ int ion_sync_fd(int fd, int handle_fd)
+     return ion_ioctl(fd, ION_IOC_SYNC, &data);
+ #endif
+ }
++
++int ion_getphyadr(int fd, void *handle_fd)
++{
++    int ret = 0;
++    struct ion_custom_data custom_data;
++    sunxi_phys_data phys_data;
++    custom_data.cmd = ION_IOC_SUNXI_PHYS_ADDR;
++    phys_data.handle = handle_fd;
++    custom_data.arg = (unsigned long) &phys_data;
++    ret = ioctl(fd, ION_IOC_CUSTOM, &custom_data);
++    if(ret < 0)
++        return 0;
++    return phys_data.phys_addr;
++}
+-- 
+1.9.1
+
