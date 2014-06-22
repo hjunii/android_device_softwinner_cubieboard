@@ -1,6 +1,11 @@
 /*
  * Copyright (C) 2010 ARM Limited. All rights reserved.
  *
+ * Portions of this code have been modified from the original.
+ * These modifications are:
+ *    * includes
+ *    * alloc_device_open()
+ *
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,19 +22,6 @@
  */
 
 #include <hardware/hardware.h>
-
-#ifndef AWAR
-#define AWAR(fmt, args...) __android_log_print(ANDROID_LOG_WARN, "[Gralloc-Warning]", "%s:%d " fmt,__func__,__LINE__,args)
-#endif
-#ifndef AINF
-#define AINF(fmt, args...) __android_log_print(ANDROID_LOG_INFO, "[Gralloc]", fmt,args)
-#endif
-#ifndef AERR
-#define AERR(fmt, args...) __android_log_print(ANDROID_LOG_ERROR, "[Gralloc-ERROR]", "%s:%d " fmt,__func__,__LINE__,args)
-#endif
-#ifndef AERR_IF
-#define AERR_IF( eq, fmt, args...) if ( (eq) ) AERR( fmt, args )
-#endif
 
 // Create an alloc device
 int alloc_device_open(hw_module_t const* module, const char* name, hw_device_t** device);

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2010-2012 ARM Limited. All rights reserved.
+ * Copyright (C) 2010-2011, 2013 ARM Limited. All rights reserved.
  * 
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -44,17 +44,17 @@
 
 #if defined(__GNUC__)
 #if __GNUC__ >= 4
-#	define MALI_VISIBLE  __attribute__ ((visibility ("default")))		/**< Function should be visible from outside the dll */	
+#   define MALI_VISIBLE  __attribute__ ((visibility ("default")))       /**< Function should be visible from outside the dll */
 #else
-#	define MALI_VISIBLE
+#   define MALI_VISIBLE
 #endif
 
 #elif defined(__ARMCC_VERSION)
 /* ARMCC specific */
-#	define MALI_VISIBLE  __declspec(dllexport)
+#   define MALI_VISIBLE  __declspec(dllexport)
 
 #else
-#	define MALI_VISIBLE
+#   define MALI_VISIBLE
 
 #endif
 

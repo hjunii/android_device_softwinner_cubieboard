@@ -36,6 +36,7 @@ PRODUCT_COPY_FILES += \
 
 PRODUCT_COPY_FILES += \
 	device/softwinner/cubieboard/modules/mali.ko:system/lib/modules/mali.ko \
+	device/softwinner/cubieboard/modules/ump.ko:system/lib/modules/ump.ko \
 	device/softwinner/cubieboard/modules/8192cu.ko:system/lib/modules/8192cu.ko \
 
 PRODUCT_COPY_FILES += \
@@ -122,5 +123,9 @@ PRODUCT_PROPERTY_OVERRIDES += \
 	ro.zygote.disable_gl_preload=1 \
 	ro.opengles.version=131072 \
 	debug.hwui.render_dirty_regions=false
+
+# TWRP
+PRODUCT_COPY_FILES += \
+	device/softwinner/cubieboard/twrp.fstab:recovery/root/etc/twrp.fstab
 
 $(call inherit-product, frameworks/native/build/tablet-7in-xhdpi-2048-dalvik-heap.mk)

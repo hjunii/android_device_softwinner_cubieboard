@@ -44,6 +44,7 @@ on post-fs-data
 
 on boot
     # insmod mali driver
+    insmod /system/lib/modules/ump.ko
     insmod /system/lib/modules/mali.ko
 
     # Interactive governor settings

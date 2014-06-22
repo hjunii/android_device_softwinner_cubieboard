@@ -44,13 +44,13 @@ LOCAL_MODULE := gralloc.sun4i
 #else
 # Mali-200/300/400MP DDK
 MALI_DDK_PATH := hardware/arm/mali
-#SHARED_MEM_LIBS := libUMP
-SHARED_MEM_LIBS := libion libhardware
+SHARED_MEM_LIBS := libUMP
+#SHARED_MEM_LIBS := libion libhardware
 LOCAL_SHARED_LIBRARIES := liblog libcutils libMali libGLESv1_CM $(SHARED_MEM_LIBS)
 
 LOCAL_C_INCLUDES := system/core/include/ $(MALI_DDK_PATH)/include 
 # Include the UMP header files
-LOCAL_C_INCLUDES += $(MALI_DDK_PATH)/src/ump/include
+LOCAL_C_INCLUDES += $(LOCAL_PATH)/ump
 
 LOCAL_CFLAGS := -DLOG_TAG=\"gralloc\" -DGRALLOC_32_BITS #-DSTANDARD_LINUX_SCREEN
 #endif
