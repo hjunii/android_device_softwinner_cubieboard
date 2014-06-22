@@ -22,17 +22,3 @@
 
 add_lunch_combo cm_cubieboard-eng
 add_lunch_combo cm_cubieboard-userdebug
-
-echo ""
-echo "Applying patches for cubieboard"
-echo ""
-
-echo "Apply patch to system/core"
-echo -n "Apply patch 0001-sunxi-ion-patch.patch"
-(cd system/core; git am ../../device/softwinner/cubieboard/patches/0001-sunxi-ion-patch.patch) > /dev/null 2>&1
-if [ $? == 0 ]; then
-    echo "     [DONE]"
-else
-    (cd system/core; git am --abort)
-    echo "     [FAIL]"
-fi
