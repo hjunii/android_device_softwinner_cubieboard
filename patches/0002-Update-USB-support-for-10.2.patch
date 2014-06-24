@@ -1,0 +1,159 @@
+From aacc126891b764e402220212fd1b1486830dd703 Mon Sep 17 00:00:00 2001
+From: Ricardo Cerqueira <cyanogenmod@cerqueira.org>
+Date: Tue, 6 Aug 2013 14:44:40 +0100
+Subject: [PATCH 2/3] Update USB support for 10.2
+
+Change-Id: Ia476759fe3b996682e617844571de782eadbdb74
+---
+ hci/Android.mk          | 18 ++++++++++++------
+ hci/include/usb.h       | 21 +++++++++++++++------
+ hci/src/bt_hci_bdroid.c |  2 ++
+ hci/src/usb.c           | 12 +++++++++++-
+ 4 files changed, 40 insertions(+), 13 deletions(-)
+
+diff --git a/hci/Android.mk b/hci/Android.mk
+index e3254c0..9dfd4d6 100644
+--- a/hci/Android.mk
++++ b/hci/Android.mk
+@@ -21,21 +21,27 @@ LOCAL_SRC_FILES += \
+ 
+ else
+ 
+-LOCAL_SRC_FILES += \
+-        src/hci_h4.c \
+-        src/userial.c
++ifeq ($(BLUETOOTH_HCI_USE_USB),true)
+ 
+-endif
++LOCAL_CFLAGS += -DHCI_H2
+ 
+-ifeq ($(BLUETOOTH_HCI_USE_USB),true)
+ LOCAL_SRC_FILES += \
+-        src/usb.c
++        src/usb.c \
++        src/hci_h4.c
+ 
+ LOCAL_C_INCLUDES += \
+         external/libusb
+ 
+ LOCAL_SHARED_LIBRARIES := \
+         libusb
++
++else
++
++LOCAL_SRC_FILES += \
++        src/hci_h4.c \
++        src/userial.c
++
++endif
+ endif
+ 
+ LOCAL_C_INCLUDES += \
+diff --git a/hci/include/usb.h b/hci/include/usb.h
+index 2be07b9..797e019 100644
+--- a/hci/include/usb.h
++++ b/hci/include/usb.h
+@@ -77,7 +77,7 @@ struct bt_usb_device {
+ ** Returns         TRUE/FALSE
+ **
+ *******************************************************************************/
+-uint8_t usb_init(void);
++typedef uint8_t (*tUSERIAL_INIT)(void);
+ 
+ /*******************************************************************************
+ **
+@@ -88,7 +88,7 @@ uint8_t usb_init(void);
+ ** Returns         TRUE/FALSE
+ **
+ *******************************************************************************/
+-uint8_t usb_open(uint8_t port);
++typedef uint8_t (*tUSERIAL_OPEN)(uint8_t port);
+ 
+ /*******************************************************************************
+ **
+@@ -100,7 +100,7 @@ uint8_t usb_open(uint8_t port);
+ **                 copied into p_data.  This may be less than len.
+ **
+ *******************************************************************************/
+-uint16_t  usb_read(uint16_t msg_id, uint8_t *p_buffer, uint16_t len);
++typedef uint16_t (*tUSERIAL_READ)(uint16_t msg_id, uint8_t *p_buffer, uint16_t len);
+ 
+ /*******************************************************************************
+ **
+@@ -112,7 +112,7 @@ uint16_t  usb_read(uint16_t msg_id, uint8_t *p_buffer, uint16_t len);
+ **                 may be less than len.
+ **
+ *******************************************************************************/
+-uint16_t usb_write(uint16_t msg_id, uint8_t *p_data, uint16_t len);
++typedef uint16_t (*tUSERIAL_WRITE)(uint16_t msg_id, uint8_t *p_data, uint16_t len);
+ 
+ /*******************************************************************************
+ **
+@@ -123,7 +123,7 @@ uint16_t usb_write(uint16_t msg_id, uint8_t *p_data, uint16_t len);
+ ** Returns         None
+ **
+ *******************************************************************************/
+-void usb_close(void);
++typedef void (*tUSERIAL_CLOSE)(void);
+ 
+ /*******************************************************************************
+ **
+@@ -134,7 +134,16 @@ void usb_close(void);
+ ** Returns         None
+ **
+ *******************************************************************************/
+-void usb_ioctl(usb_ioctl_op_t op, void *p_data);
++typedef void (*tUSERIAL_IOCTL)(userial_ioctl_op_t op, void *p_data);
++
++typedef struct {
++    tUSERIAL_INIT init;
++    tUSERIAL_OPEN open;
++    tUSERIAL_READ read;
++    tUSERIAL_WRITE write;
++    tUSERIAL_CLOSE close;
++    tUSERIAL_IOCTL ioctl;
++} tUSERIAL_IF;
+ 
+ #endif /* USB_H */
+ 
+diff --git a/hci/src/bt_hci_bdroid.c b/hci/src/bt_hci_bdroid.c
+index 8e4f8ff..57d1a03 100644
+--- a/hci/src/bt_hci_bdroid.c
++++ b/hci/src/bt_hci_bdroid.c
+@@ -523,7 +523,9 @@ static void *bt_hc_worker_thread(void *arg)
+                         p_next_msg = utils_getnext(p_next_msg);
+                         continue;
+                     }
++#ifndef HCI_H2
+                     sending_hci_cmd_pkts_count++;
++#endif
+                 }
+ 
+                 p_msg = p_next_msg;
+diff --git a/hci/src/usb.c b/hci/src/usb.c
+index 77d0ffa..9500702 100644
+--- a/hci/src/usb.c
++++ b/hci/src/usb.c
+@@ -1162,8 +1162,18 @@ void usb_close(void)
+ ** Returns         None
+ **
+ *******************************************************************************/
+-void usb_ioctl(usb_ioctl_op_t op, void *p_data)
++void usb_ioctl(userial_ioctl_op_t op, void *p_data)
+ {
+     return;
+ }
+ 
++const tUSERIAL_IF userial_h4_func_table =
++{
++    usb_init,
++    usb_open,
++    usb_read,
++    usb_write,
++    usb_close,
++    usb_ioctl
++};
++
+-- 
+1.9.1
+
