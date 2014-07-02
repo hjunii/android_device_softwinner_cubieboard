@@ -83,24 +83,28 @@ static int wait_for_vsync(int fd)
 {
         int interrupt, crtc;
         
+#if 0
         // enable VSYNC
         interrupt = 1;
         if (ioctl(fd, S3CFB_SET_VSYNC_INT, &interrupt) < 0) {
             ALOGE("S3CFB_SET_VSYNC_INT enable failed");
             return -EINVAL;
         }
+#endif
         // wait for VSYNC
         crtc = 0;
         if (ioctl(fd, FBIO_WAITFORVSYNC, &crtc) < 0) {
             ALOGE("FBIO_WAITFORVSYNC failed");
             return -EINVAL;
         }
+#if 0
         // disable VSYNC
         interrupt = 0;
         if (ioctl(fd, S3CFB_SET_VSYNC_INT, &interrupt) < 0) {
             ALOGE("S3CFB_SET_VSYNC_INT disable failed");
             return -EINVAL;
         }
+#endif
         return 0;
 }
 
@@ -374,7 +378,7 @@ int init_frame_buffer_locked(struct private_module_t* module)
     module->fps = fps;
 
     char value[PROPERTY_VALUE_MAX];
-    property_get("debug.gralloc.vsync", value, "1");
+    property_get("debug.gralloc.vsync", value, "0");
     module->enableVSync = atoi(value);
     /*
      * map the framebuffer

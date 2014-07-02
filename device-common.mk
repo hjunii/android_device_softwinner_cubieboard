@@ -20,8 +20,8 @@ else
 LOCAL_KERNEL := $(TARGET_PREBUILT_KERNEL)
 endif
 
-PRODUCT_AAPT_CONFIG := normal hdpi xhdpi
-PRODUCT_AAPT_PREF_CONFIG := xhdpi
+PRODUCT_AAPT_CONFIG := normal hdpi xhdpi xxhdpi
+PRODUCT_AAPT_PREF_CONFIG := xhdpi xxhdpi
 
 # Set default USB interface
 PRODUCT_DEFAULT_PROPERTY_OVERRIDES += \
@@ -32,6 +32,7 @@ PRODUCT_COPY_FILES += \
     device/softwinner/cubieboard/fstab.sun4i:root/fstab.sun4i \
     device/softwinner/cubieboard/ueventd.sun4i.rc:root/ueventd.sun4i.rc \
     device/softwinner/cubieboard/init.sun4i.usb.rc:root/init.sun4i.usb.rc \
+	device/softwinner/cubieboard/init.recovery.sun4i.rc:root/init.recovery.sun4i.rc \
     device/softwinner/cubieboard/gps.conf:system/etc/gps.conf
 
 PRODUCT_COPY_FILES += \
@@ -128,4 +129,4 @@ PRODUCT_PROPERTY_OVERRIDES += \
 PRODUCT_COPY_FILES += \
 	device/softwinner/cubieboard/twrp.fstab:recovery/root/etc/twrp.fstab
 
-$(call inherit-product, frameworks/native/build/tablet-7in-xhdpi-2048-dalvik-heap.mk)
+$(call inherit-product, frameworks/native/build/tablet-7in-hdpi-1024-dalvik-heap.mk)
