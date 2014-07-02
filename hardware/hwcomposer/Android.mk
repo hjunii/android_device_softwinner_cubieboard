@@ -20,14 +20,11 @@ LOCAL_PATH := $(call my-dir)
 include $(CLEAR_VARS)
 
 LOCAL_MODULE_PATH := $(TARGET_OUT_SHARED_LIBRARIES)/hw
+LOCAL_SHARED_LIBRARIES := liblog libEGL libutils libcutils
 LOCAL_SRC_FILES := hwcomposer.cpp
-LOCAL_SHARED_LIBRARIES := \
-	liblog \
-	libutils \
-	libEGL \
-	libGLESv1_CM 
-LOCAL_C_INCLUDES += $(TARGET_HARDWARE_INCLUDE)
 LOCAL_MODULE := hwcomposer.$(TARGET_BOARD_PLATFORM)
-LOCAL_CFLAGS:= -DLOG_TAG=\"hwcomposer\"
+LOCAL_CFLAGS := -DLOG_TAG=\"hwcomposer\"
+LOCAL_C_INCLUDES := $(TOP)/device/softwinner/cubieboard/hardware/gralloc/
+LOCAL_C_INCLUDES += $(TOP)/device/softwinner/cubieboard/hardware/gralloc/include
 LOCAL_MODULE_TAGS := optional
 include $(BUILD_SHARED_LIBRARY)

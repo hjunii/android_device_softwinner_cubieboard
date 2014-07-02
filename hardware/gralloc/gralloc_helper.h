@@ -1,11 +1,6 @@
 /*
  * Copyright (C) 2010 ARM Limited. All rights reserved.
  *
- * Portions of this code have been modified from the original.
- * These modifications are:
- *    * includes
- *    * round_up_to_page_size()
- *
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -28,7 +23,7 @@
 
 inline size_t round_up_to_page_size(size_t x)
 {
-    return (x + (PAGE_SIZE-1)) & ~(PAGE_SIZE-1);
+	return (x + (PAGE_SIZE - 1)) & ~(PAGE_SIZE - 1);
 }
 
 #endif /* GRALLOC_HELPER_H_ */

@@ -1,12 +1,6 @@
 /*
  * Copyright (C) 2010 ARM Limited. All rights reserved.
  *
- * Portions of this code have been modified from the original.
- * These modifications are:
- *    * includes
- *    * framebuffer_device_open()
- *    * init_frame_buffer_locked()
- *
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,7 +19,7 @@
 #include <hardware/hardware.h>
 
 // Create a framebuffer device
-int framebuffer_device_open(hw_module_t const* module, const char* name, hw_device_t** device);
+int framebuffer_device_open(hw_module_t const *module, const char *name, hw_device_t **device);
 
 // Initialize the framebuffer (must keep module lock before calling
-int init_frame_buffer_locked(struct private_module_t* module);
+int init_frame_buffer_locked(struct private_module_t *module);

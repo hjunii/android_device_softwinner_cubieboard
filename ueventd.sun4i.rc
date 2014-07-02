@@ -1,5 +1,5 @@
 # disp driver
-/dev/disp                 0777   system     system 
+/dev/disp                 0777   system     graphics
 /dev/g2d             	  0777   system     system 
 /dev/cedar_dev            0666   system     system 
 /dev/ace_dev              0666   system     system 

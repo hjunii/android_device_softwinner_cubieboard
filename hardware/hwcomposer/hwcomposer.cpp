@@ -14,49 +14,60 @@
  * limitations under the License.
  */
 
-//#define LOG_NDEBUG 0
-
 #include <hardware/hardware.h>
 
 #include <fcntl.h>
 #include <errno.h>
 
-#include <cutils/log.h>
-#include <cutils/atomic.h>
-#include <time.h>
-#include <signal.h>
-#include <pthread.h>
-#include <sys/time.h>
-#include <sys/resource.h>
 #include <sys/ioctl.h>
 
-#include <hardware/hwcomposer.h>
-#include <drv_display_sun4i.h>
-#include <fb.h>
-#include <EGL/egl.h>
-#include <hardware_legacy/uevent.h>
-#include <sys/resource.h>
-#include <stdlib.h>
+#include <cutils/log.h>
+#include <cutils/atomic.h>
 
+#include <hardware/hwcomposer.h>
+
+#include <EGL/egl.h>
+
+#include <pthread.h>
+#include <utils/Timers.h>
+#include <sys/resource.h>
+#include <signal.h>
+
+#include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
 #include <linux/netlink.h>
 #include <poll.h>
+#include <hardware_legacy/uevent.h>
+#include <cutils/properties.h>
+#include <system/thread_defs.h>
 
-#include "hwccomposer_priv.h"
-#include <cutils/properties.h> 
-#include <utils/Timers.h>
+#include "drv_display_sun4i.h"
+#include "gralloc_priv.h"
 
-#include <GLES/gl.h>
+#define GET_UMP_PHYSICAL_ADDRESS 0x4702
 
-#define LOGV ALOGV
-#define LOGD ALOGD
-#define LOGE ALOGE
-
-#define STATUS_LOG ALOGV
-#define RECT_LOG ALOGV
-
-#define BOOTVIDEO_SCREEN_ID 0
 /*****************************************************************************/
+
+struct hwc_context_t {
+    hwc_composer_device_1_t device;
+
+    /* our private state goes below here */
+	hwc_procs_t* m_callback;
+
+	int m_fb_fd;
+	int m_disp_fd;
+	uint32_t ui_layerhdl;
+	uint32_t video_layerhdl;
+	bool video_opened;
+	bool have_frame;
+	private_handle_t * previous_handle;
+	uint32_t count;
+
+	bool vsync_enabled;
+	pthread_t vsync_thread;
+};
+
 static int hwc_device_open(const struct hw_module_t* module, const char* name,
         struct hw_device_t** device);
 
@@ -90,1344 +101,832 @@ static void dump_layer(hwc_layer_1_t const* l) {
             l->displayFrame.right,
             l->displayFrame.bottom);
 }
-static int hwc_video_open(sun4i_hwc_context_t *ctx, int screen_idx)
+
+static int hwc_video_open(struct hwc_context_t *ctx)
 {
-	unsigned long args[4]={0};
+	unsigned long args[4] = {0};
 
-    ALOGD("#%s screen_idx:%d\n", __FUNCTION__, screen_idx);
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_OPEN, args);
 
-    if(ctx->video_layerhdl[screen_idx] != 0)
-    {        
-        args[0]                         = screen_idx;
-        args[1]                         = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd, DISP_CMD_LAYER_OPEN,args);
+	//args[0]                         = 0;
+	//args[1]                         = ctx->video_layerhdl;
+	//ioctl(ctx->m_disp_fd, DISP_CMD_VIDEO_START, args);
 
-        ctx->status[screen_idx] |= HWC_STATUS_OPENED;
-        STATUS_LOG("#status[%d]=%d in %s", screen_idx, ctx->status[screen_idx], __FUNCTION__);
-    }
+	//ctx->have_frame = false;
 
 	return 0;
 }
 
-static int hwc_video_close(sun4i_hwc_context_t *ctx, int screen_idx)
+static int hwc_video_close(struct hwc_context_t *ctx)
 {
-	unsigned long args[4]={0};
+	unsigned long args[4] = {0};
 
-    ALOGD("#%s screen_idx:%d\n", __FUNCTION__, screen_idx);
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CLOSE, args);
 
-    if(ctx->video_layerhdl[screen_idx] != 0)
-    {
-        args[0]                         = screen_idx;
-        args[1]                         = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd, DISP_CMD_LAYER_CLOSE,args);
+	//args[0]                         = 0;
+	//args[1]                         = ctx->video_layerhdl;
+	//ioctl(ctx->m_disp_fd, DISP_CMD_VIDEO_STOP, args);
 
-        ctx->status[screen_idx] &= (HWC_STATUS_OPENED_MASK);
-        STATUS_LOG("#status[%d]=%d in %s", screen_idx, ctx->status[screen_idx], __FUNCTION__);
-    }
-        
+	ctx->previous_handle = NULL;
+
+	ctx->have_frame = false;
+	ctx->count = 0;
+
 	return 0;
 }
 
-static int hwc_video_request(sun4i_hwc_context_t *ctx, int screen_idx, layerinitpara_t *layer_init_para)
+#define _ALIGN( value, base ) (((value) + ((base) - 1)) & ~((base) - 1))
+
+static int hwc_video_set_fb(struct hwc_context_t *ctx, hwc_layer_1_t *layer)
 {
-    __disp_layer_info_t         layer_info;
-    __disp_colorkey_t           ck;
-    unsigned long               args[4]={0};
-    int                         ret;
+	unsigned long args[4] = {0};
+	int ret;
 
-    ALOGD("#%s screen_idx:%d\n", __FUNCTION__, screen_idx);
+	__disp_fb_t fb;
 
-    if(screen_idx == 0)
-    {
-        ioctl(ctx->mFD_fb[0], FBIOGET_LAYER_HDL_0, &ctx->ui_layerhdl[0]);
-    }
-    else
-    {
-        ioctl(ctx->mFD_fb[1], FBIOGET_LAYER_HDL_1, &ctx->ui_layerhdl[1]);
-    }
+	private_handle_t * priv_handle = (private_handle_t*) layer->handle;
 
-    if(ctx->video_layerhdl[screen_idx] != 0)
-    {
-        //should not be here, something wrong????
-        args[0] = screen_idx;
-        args[1] = ctx->video_layerhdl[screen_idx];
-        ctx->video_layerhdl[screen_idx] = (uint32_t)ioctl(ctx->dispfd, DISP_CMD_LAYER_RELEASE,args);
-    }
-    
-    args[0] = screen_idx;
-    ctx->video_layerhdl[screen_idx] = (uint32_t)ioctl(ctx->dispfd, DISP_CMD_LAYER_REQUEST,args);
-    if(ctx->video_layerhdl[screen_idx] == 0)
-    {
-        ALOGD("####request layer failed in %s!\n", __FUNCTION__);
-        return -1;
-    }
+	if (priv_handle == ctx->previous_handle)
+		return 0;
 
-    memset(&layer_info, 0, sizeof(__disp_layer_info_t));
-    if (layer_init_para->h < 720)
-    {
-        layer_info.fb.cs_mode = DISP_BT601;
-    }
-    else
-    {
-        layer_info.fb.cs_mode = DISP_BT709;
-    }
-    layer_info.fb.mode = DISP_MOD_MB_UV_COMBINED;
-    layer_info.fb.seq = DISP_SEQ_UVUV;
-    switch(layer_init_para->format)
-    {
-        case HWC_FORMAT_MBYUV420:
-            layer_info.fb.format = DISP_FORMAT_YUV420;
-            layer_info.fb.mode = DISP_MOD_MB_UV_COMBINED;
-            break;
-        case HWC_FORMAT_MBYUV422:
-            layer_info.fb.format = DISP_FORMAT_YUV422;
-            layer_info.fb.mode = DISP_MOD_MB_UV_COMBINED;
-            break;
-        case HWC_FORMAT_YUV420PLANAR:
-            layer_info.fb.format = DISP_FORMAT_YUV420;
-            layer_info.fb.mode = DISP_MOD_NON_MB_PLANAR;
-            layer_info.fb.seq = DISP_SEQ_P3210;
-            break;
-        case HWC_FORMAT_RGBA_8888:
-            layer_info.fb.format = DISP_FORMAT_ARGB8888;
-            layer_info.fb.mode = DISP_MOD_NON_MB_PLANAR;
-            layer_info.fb.seq = DISP_SEQ_P3210;
-            break;
-        case HWC_FORMAT_DEFAULT:
-		    layer_info.fb.format = DISP_FORMAT_YUV420;
-		    //layer_info.fb.mode = DISP_MOD_MB_UV_COMBINED;
-		    layer_info.fb.mode = DISP_MOD_NON_MB_UV_COMBINED;
-		    layer_info.fb.seq = DISP_SEQ_VUVU;
-		    break;
-        default:
-            layer_info.fb.format = DISP_FORMAT_YUV420;
-            layer_info.fb.mode = DISP_MOD_NON_MB_UV_COMBINED;
-            break;
-    }
-    layer_info.fb.br_swap         = 0;
-    layer_info.fb.addr[0]         = 0;
-    layer_info.fb.addr[1]         = 0;
-    layer_info.fb.addr[2]         = 0;
-    layer_info.fb.size.width      = layer_init_para->w;
-    layer_info.fb.size.height     = layer_init_para->h;
-    layer_info.mode               = DISP_LAYER_WORK_MODE_SCALER;
-    layer_info.alpha_en           = 1;
-    layer_info.alpha_val          = 0xff;
-    layer_info.pipe               = 1;
-    layer_info.src_win.x          = 0;
-    layer_info.src_win.y          = 0;
-    layer_info.src_win.width      = 1;
-    layer_info.src_win.height     = 1;
-    layer_info.scn_win.x          = 0;
-    layer_info.scn_win.y          = 0;
-    layer_info.scn_win.width      = 1;
-    layer_info.scn_win.height     = 1;
+	memset(&fb, 0, sizeof(fb));
 
-    args[0]                         = screen_idx;
-    args[1]                         = ctx->video_layerhdl[screen_idx];
-    args[2]                         = (unsigned long) (&layer_info);
-    args[3]                         = 0;
-    ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-
-    args[0]                         = screen_idx;
-    args[1]                         = ctx->video_layerhdl[screen_idx];
-    ioctl(ctx->dispfd, DISP_CMD_LAYER_BOTTOM, args);
-    
-    ck.ck_min.alpha                 = 0xff;
-    ck.ck_min.red                   = 0x00; //0x01;
-    ck.ck_min.green                 = 0x00; //0x03;
-    ck.ck_min.blue                  = 0x00; //0x05;
-    ck.ck_max.alpha                 = 0xff;
-    ck.ck_max.red                   = 0x00; //0x01;
-    ck.ck_max.green                 = 0x00; //0x03;
-    ck.ck_max.blue                  = 0x00; //0x05;
-    ck.red_match_rule               = 2;
-    ck.green_match_rule             = 2;
-    ck.blue_match_rule              = 2;
-    args[0]                         = screen_idx;
-    args[1]                         = (unsigned long)&ck;
-    ioctl(ctx->dispfd,DISP_CMD_SET_COLORKEY,(void*)args);
-
-    args[0]                         = screen_idx;
-    args[1]                         = ctx->ui_layerhdl[screen_idx];
-    ioctl(ctx->dispfd,DISP_CMD_LAYER_CK_OFF,(void*)args);
-
-    args[0]                         = screen_idx;
-    args[1]                         = ctx->ui_layerhdl[screen_idx];
-    args[2]                         = (unsigned long) (&layer_info);
-    args[3]                         = 0;
-    ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-    if(ret < 0)
-    {
-        ALOGD("####DISP_CMD_LAYER_GET_PARA fail in %s, screen_idx:%d,hdl:%d\n", __FUNCTION__, screen_idx, ctx->ui_layerhdl[screen_idx]);
-    }
-
-    if(1)//layer_info.mode == DISP_LAYER_WORK_MODE_SCALER)
-    {
-        args[0]                     = screen_idx;
-        args[1]                     = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd,DISP_CMD_LAYER_CK_ON,(void*)args);
-    }
-    else
-    {
-        args[0]                     = screen_idx;
-        args[1]                     = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd,DISP_CMD_LAYER_CK_OFF,(void*)args);
-    }
-
-    args[0]                         = screen_idx;
-    args[1]                         = ctx->ui_layerhdl[screen_idx];
-    ioctl(ctx->dispfd, DISP_CMD_LAYER_ALPHA_OFF, args);    
-    
-    args[0]                         = screen_idx;
-    args[1]                         = ctx->video_layerhdl[screen_idx];
-    ret = ioctl(ctx->dispfd, DISP_CMD_VIDEO_START, args);
-
-    ctx->w = layer_init_para->w;
-    ctx->h = layer_init_para->h;
-    ctx->format = layer_init_para->format;
-
-    
-    return 0;
-}
-
-static int hwc_video_release(sun4i_hwc_context_t *ctx, int screen_idx)
-{
-	unsigned long args[4]={0};
-
-    ALOGD("#hwc_video_release screen_idx:%d\n", screen_idx);
-
-    if(ctx->video_layerhdl[screen_idx] != 0)
-    {
-        args[0]                         = screen_idx;
-        args[1]                         = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd, DISP_CMD_LAYER_CLOSE,args);
-
-        args[0]                         = screen_idx;
-        args[1]                         = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd, DISP_CMD_VIDEO_STOP, args);
-
-        usleep(20 * 1000);
-
-        args[0]                         = screen_idx;
-        args[1]                         = ctx->video_layerhdl[screen_idx];
-        ioctl(ctx->dispfd, DISP_CMD_LAYER_RELEASE, args);
-
-        ctx->video_layerhdl[screen_idx] = 0;
-    }
-
-    memset(&ctx->rect_in, 0, sizeof(hwc_rect_t));
-    memset(&ctx->rect_out, 0, sizeof(hwc_rect_t));
-    ctx->cur_3denable = 0;
-
-    ctx->status[screen_idx] &= HWC_STATUS_HAVE_VIDEO;
-    STATUS_LOG("#status[%d]=%d in %s", screen_idx, ctx->status[screen_idx], __FUNCTION__);
-    
-	return 0;
-}
-
-
-static int hwc_video_3d_mode(sun4i_hwc_context_t *ctx, int screen_idx, video3Dinfo_t *_3d_info)
-{
-    __disp_layer_info_t         layer_info;
-    __disp_output_type_t        cur_out_type;
-    __disp_tv_mode_t            cur_hdmi_mode;
-    unsigned long               args[4]={0};
-    int                         ret = -1;
-
-    ALOGD("#%s, screen_idx:%d, src:%d, out:%d, w:%d, h:%d, format:0x%x\n", 
-        __FUNCTION__, screen_idx, _3d_info->src_mode, _3d_info->display_mode, _3d_info->width, _3d_info->height, _3d_info->format);
-
-    args[0] = screen_idx;
-    cur_out_type = (__disp_output_type_t)ioctl(ctx->dispfd,DISP_CMD_GET_OUTPUT_TYPE,(unsigned long)args);
-    if(cur_out_type == DISP_OUTPUT_TYPE_HDMI)
-    {
-        args[0] = screen_idx;
-        cur_hdmi_mode = (__disp_tv_mode_t)ioctl(ctx->dispfd,DISP_CMD_HDMI_GET_MODE,(unsigned long)args);
-
-        if(cur_hdmi_mode == DISP_TV_MOD_1080P_24HZ_3D_FP || cur_hdmi_mode == DISP_TV_MOD_720P_50HZ_3D_FP || cur_hdmi_mode == DISP_TV_MOD_720P_60HZ_3D_FP)
-        {
-            if((_3d_info->display_mode != HWC_3D_OUT_MODE_HDMI_3D_1080P24_FP) && (_3d_info->display_mode != HWC_3D_OUT_MODE_HDMI_3D_720P50_FP) 
-                && (_3d_info->display_mode != HWC_3D_OUT_MODE_HDMI_3D_720P60_FP))
-            {
-                // 3d to 2d
-                __disp_layer_info_t         ui_layer_info;
-                
-                args[0]                         = screen_idx;
-                args[1]                         = ctx->ui_layerhdl[screen_idx];
-                args[2]                         = (unsigned long) (&ui_layer_info);
-                ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-
-                ui_layer_info.scn_win.x = ctx->org_scn_win.x;
-                ui_layer_info.scn_win.y = ctx->org_scn_win.y;
-                ui_layer_info.scn_win.width = ctx->org_scn_win.width;
-                ui_layer_info.scn_win.height = ctx->org_scn_win.height;
-                
-                args[0]                         = screen_idx;
-                args[1]                         = ctx->ui_layerhdl[screen_idx];
-                args[2]                         = (unsigned long) (&ui_layer_info);
-                ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-                
-                args[0] = screen_idx;
-                ret = ioctl(ctx->dispfd,DISP_CMD_HDMI_OFF,(unsigned long)args);
-
-                args[0] = screen_idx;
-                args[1] = ctx->org_hdmi_mode;
-                ioctl(ctx->dispfd,DISP_CMD_HDMI_SET_MODE,(unsigned long)args);
-                
-                args[0] = screen_idx;
-                ret = ioctl(ctx->dispfd,DISP_CMD_HDMI_ON,(unsigned long)args);
-            }
-        }
-        else
-        {
-            if(_3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_1080P24_FP || _3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_720P50_FP 
-                || _3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_720P60_FP)
-            {
-                // 2d to 3d
-                ctx->org_hdmi_mode = cur_hdmi_mode;
-                
-                __disp_layer_info_t 		ui_layer_info;
-                
-                args[0]                         = screen_idx;
-                args[1]                         = ctx->ui_layerhdl[screen_idx];
-                args[2]                         = (unsigned long) (&ui_layer_info);
-                ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-                
-                ctx->org_scn_win.x = ui_layer_info.scn_win.x;
-                ctx->org_scn_win.y = ui_layer_info.scn_win.y;
-                ctx->org_scn_win.width = ui_layer_info.scn_win.width;
-                ctx->org_scn_win.height = ui_layer_info.scn_win.height;
-                
-                ui_layer_info.scn_win.x = 0;
-                ui_layer_info.scn_win.y = 0;
-                if(_3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_1080P24_FP)
-                {
-                    ui_layer_info.scn_win.width = 1920;
-                    ui_layer_info.scn_win.height = 1080;
-                }
-                else
-                {
-                    ui_layer_info.scn_win.width = 1280;
-                    ui_layer_info.scn_win.height = 720;
-                }
-                args[0]                         = screen_idx;
-                args[1]                         = ctx->ui_layerhdl[screen_idx];
-                args[2]                         = (unsigned long) (&ui_layer_info);
-                ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-                
-                args[0] = screen_idx;
-                ret = ioctl(ctx->dispfd,DISP_CMD_HDMI_OFF,(unsigned long)args);
-                
-                args[0] = screen_idx;
-                if(_3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_1080P24_FP)
-                {
-                    args[1] = DISP_TV_MOD_1080P_24HZ_3D_FP;
-                }
-                else if(_3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_720P50_FP)
-                {
-                    args[1] = DISP_TV_MOD_720P_50HZ_3D_FP;
-                }
-                else if(_3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_720P60_FP)
-                {
-                    args[1] = DISP_TV_MOD_720P_60HZ_3D_FP;
-                }
-                ioctl(ctx->dispfd,DISP_CMD_HDMI_SET_MODE,(unsigned long)args);
-                
-                args[0] = screen_idx;
-                ret = ioctl(ctx->dispfd,DISP_CMD_HDMI_ON,(unsigned long)args);
-            }
-        }
-    }
-
-    args[0] = screen_idx;
-    args[1] = ctx->video_layerhdl[screen_idx];
-    args[2] = (unsigned long)&layer_info;
-    ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-    if(ret < 0)
-    {
-        ALOGD("####DISP_CMD_LAYER_GET_PARA fail in %s, screen_idx:%d,hdl:%d\n",__FUNCTION__, screen_idx, ctx->video_layerhdl[screen_idx]);
-    }
-
-    layer_info.fb.size.width = _3d_info->width;
-    layer_info.fb.size.height = _3d_info->height;
-    layer_info.src_win.x = 0;
-    layer_info.src_win.y = 0;
-    layer_info.src_win.width = _3d_info->width;
-    layer_info.src_win.height = _3d_info->height;
-    
-    if(_3d_info->format == HWC_FORMAT_RGBA_8888)//·ЦЙ«
-    {
-        layer_info.fb.mode = DISP_MOD_NON_MB_PLANAR;
-        layer_info.fb.format = DISP_FORMAT_ARGB8888;
-        layer_info.fb.seq = DISP_SEQ_P3210;
-    }
-    else if(_3d_info->format == HWC_FORMAT_YUV420PLANAR)
-    {
-        layer_info.fb.mode = DISP_MOD_NON_MB_PLANAR;
-        layer_info.fb.format = DISP_FORMAT_YUV420;
-        layer_info.fb.seq = DISP_SEQ_P3210;
-    }
-    else if(_3d_info->format == HWC_FORMAT_MBYUV422)
-    {
-        layer_info.fb.mode = DISP_MOD_MB_UV_COMBINED;
-        layer_info.fb.format = DISP_FORMAT_YUV422;
-        layer_info.fb.seq = DISP_SEQ_UVUV;
-    }
-    else
-    {
-        layer_info.fb.mode = DISP_MOD_MB_UV_COMBINED;
-        layer_info.fb.format = DISP_FORMAT_YUV420;
-        layer_info.fb.seq = DISP_SEQ_UVUV;
-    }
-
-    if(_3d_info->src_mode == HWC_3D_SRC_MODE_NORMAL)
-    {
-        layer_info.fb.b_trd_src = 0;
-    }
-    else
-    {
-        layer_info.fb.b_trd_src = 1;
-        layer_info.fb.trd_mode = (__disp_3d_src_mode_t)_3d_info->src_mode;
-        layer_info.fb.trd_right_addr[0] = layer_info.fb.addr[0];
-        layer_info.fb.trd_right_addr[1] = layer_info.fb.addr[1];
-        layer_info.fb.trd_right_addr[2] = layer_info.fb.addr[2];
-    }
-    if(_3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_1080P24_FP || _3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_720P50_FP 
-        || _3d_info->display_mode == HWC_3D_OUT_MODE_HDMI_3D_720P60_FP)
-    {
-        if(cur_out_type == DISP_OUTPUT_TYPE_HDMI)
-        {
-            layer_info.b_trd_out = 1;
-            layer_info.out_trd_mode = DISP_3D_OUT_MODE_FP;
-        }
-        else
-        {
-            layer_info.fb.b_trd_src = 0;
-            layer_info.b_trd_out = 0;
-        }
-    }
-    else if(_3d_info->display_mode == HWC_3D_OUT_MODE_ORIGINAL || _3d_info->display_mode == HWC_3D_OUT_MODE_ANAGLAGH)
-    {
-        layer_info.fb.b_trd_src = 0;
-        layer_info.b_trd_out = 0;
-    }
-    else if(_3d_info->display_mode == HWC_3D_OUT_MODE_LI || _3d_info->display_mode == HWC_3D_OUT_MODE_CI_1 || _3d_info->display_mode == HWC_3D_OUT_MODE_CI_2 || 
-            _3d_info->display_mode == HWC_3D_OUT_MODE_CI_3 || _3d_info->display_mode == HWC_3D_OUT_MODE_CI_4)
-    {
-        layer_info.b_trd_out = 1;
-        layer_info.out_trd_mode = (__disp_3d_out_mode_t)_3d_info->display_mode;
-    }
-    else
-    {
-        layer_info.b_trd_out = 0;
-    }
-
-    if(layer_info.b_trd_out)
-    {
-        unsigned int w,h;
-        
-        args[0] = screen_idx;
-        w = ioctl(ctx->dispfd,DISP_CMD_SCN_GET_WIDTH,(unsigned long)args);
-        h = ioctl(ctx->dispfd,DISP_CMD_SCN_GET_HEIGHT,(unsigned long)args);
-
-        layer_info.scn_win.x = 0;
-        layer_info.scn_win.y = 0;
-        layer_info.scn_win.width = w;
-        layer_info.scn_win.height = h;
-
-        ctx->rect_out.left = 0;
-        ctx->rect_out.top = 0;
-        ctx->rect_out.right = w;
-        ctx->rect_out.bottom = h;
-    }
-    else
-    {
-        layer_info.scn_win.x = ctx->rect_out_active[screen_idx].left;
-        layer_info.scn_win.y = ctx->rect_out_active[screen_idx].top;
-        layer_info.scn_win.width = ctx->rect_out_active[screen_idx].right - ctx->rect_out_active[screen_idx].left;
-        layer_info.scn_win.height = ctx->rect_out_active[screen_idx].bottom - ctx->rect_out_active[screen_idx].top;
-    }
-    
-    ALOGV("b_3d_src:%d, 3d_src_mode:%d, b_3d_out:%d, 3d_out_mode:%d", layer_info.fb.b_trd_src, layer_info.fb.trd_mode, layer_info.b_trd_out, layer_info.out_trd_mode);
-    args[0] = screen_idx;
-    args[1] = ctx->video_layerhdl[screen_idx];
-    args[2] = (unsigned long)&layer_info;
-    ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-
-    ctx->cur_3d_w = _3d_info->width;
-    ctx->cur_3d_h = _3d_info->height;
-    ctx->cur_3d_format = _3d_info->format;
-    ctx->cur_3d_src = _3d_info->src_mode;
-    ctx->cur_3d_out = _3d_info->display_mode;
-    ctx->cur_3denable = layer_info.b_trd_out;
-    return 0;
-}
-
-
-static int hwc_video_set_frame_para(sun4i_hwc_context_t *ctx, int screen_idx, libhwclayerpara_t *overlaypara)
-{
-    __disp_video_fb_t      		video_info;
-    unsigned long               args[4]={0};
-    int                         ret;
-        
-	video_info.interlace         = (overlaypara->bProgressiveSrc?0:1);
-	video_info.top_field_first   = overlaypara->bTopFieldFirst;
-	video_info.addr[0]           = overlaypara->top_y;
-	video_info.addr[1]           = overlaypara->top_c;
-	video_info.addr[2]			 = overlaypara->bottom_y;
-	video_info.addr_right[0]     = overlaypara->bottom_y;
-	video_info.addr_right[1]     = overlaypara->bottom_c;
-	video_info.addr_right[2]	 = 0;
-	video_info.id                = overlaypara->number; 
-	video_info.maf_valid         = overlaypara->maf_valid;
-	video_info.pre_frame_valid   = overlaypara->pre_frame_valid;
-	video_info.flag_addr         = overlaypara->flag_addr;
-	video_info.flag_stride       = overlaypara->flag_stride;
-
-	if((ctx->status[screen_idx] & HWC_STATUS_HAVE_FRAME) == 0)
+#if 0
+	if (priv_handle->ump_id > 0)
 	{
-        __disp_layer_info_t         layer_info;
-
-    	ALOGD("#first_frame ............");
-
-    	args[0] 				= screen_idx;
-    	args[1] 				= ctx->video_layerhdl[screen_idx];
-    	args[2] 				= (unsigned long) (&layer_info);
-    	args[3] 				= 0;
-    	ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-        if(ret < 0)
-        {
-            ALOGD("####DISP_CMD_LAYER_GET_PARA fail in %s, screen_idx:%d, hdl:%d\n",__FUNCTION__, screen_idx, ctx->video_layerhdl[screen_idx]);
-        }
-
-    	layer_info.fb.addr[0] 	= video_info.addr[0];
-    	layer_info.fb.addr[1] 	= video_info.addr[1];
-    	layer_info.fb.addr[2] 	= video_info.addr[2];
-    	layer_info.fb.trd_right_addr[0] = video_info.addr_right[0];
-    	layer_info.fb.trd_right_addr[1] = video_info.addr_right[1];
-    	layer_info.fb.trd_right_addr[2] = video_info.addr_right[2];
-    	args[0] 				= screen_idx;
-    	args[1] 				= ctx->video_layerhdl[screen_idx];
-    	args[2] 				= (unsigned long) (&layer_info);
-    	args[3] 				= 0;
-    	ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-
-        ctx->status[screen_idx] |= HWC_STATUS_HAVE_FRAME;
-        STATUS_LOG("#status[%d]=%d in %s", screen_idx, ctx->status[screen_idx], __FUNCTION__);
-	}            
-
-	args[0]					= screen_idx;
-    args[1]                 = ctx->video_layerhdl[screen_idx];
-	args[2]                 = (unsigned long)(&video_info);
-	args[3]                 = 0;
-	ret = ioctl(ctx->dispfd, DISP_CMD_VIDEO_SET_FB,args);
-
-    memcpy(&ctx->cur_frame_para, overlaypara,sizeof(libhwclayerpara_t));
-
-    
-    return 0;
-}
-
-static int hwc_computer_rect(sun4i_hwc_context_t *ctx, int screen_idx, hwc_rect_t *rect_out, hwc_rect_t *rect_in)
-{
-    int		        ret;
-    unsigned long   args[4]={0};
-    int    screen_in_width;
-    int    screen_in_height;
-    int    temp_x,temp_y,temp_w,temp_h;
-    int    x,y,w,h,mid_x,mid_y;
-    int    force_full_screen = 0;
-
-    if(rect_in->left >= rect_in->right || rect_in->top >= rect_in->bottom)
-    {
-        ALOGV("para error in hwc_computer_rect,(left:%d,right:%d,top:%d,bottom:%d)\n", rect_in->left, rect_in->right, rect_in->top, rect_in->bottom);
-        return -1;
-    }
-
-    screen_in_width = ctx->screen_para.app_width[0];
-    screen_in_height = ctx->screen_para.app_height[0];
-
-    RECT_LOG("#1.0 in:[%d,%d,%d,%d] [%d,%d]\n", 
-        rect_in->left, rect_in->top, rect_in->right - rect_in->left, rect_in->bottom-rect_in->top,screen_in_width, screen_in_height);
-
-    
-    if(ctx->cur_3denable == true)
-    {
-    	rect_out->left = 0;
-    	rect_out->right = ctx->screen_para.width[screen_idx];
-    	rect_out->top = 0;
-    	rect_out->bottom = ctx->screen_para.height[screen_idx];
-    	
-    	return 0;
-    }
-
-    temp_x = rect_in->left;
-    temp_w = rect_in->right - rect_in->left;
-    temp_y = rect_in->top;
-    temp_h = rect_in->bottom - rect_in->top;
-
-	mid_x = temp_x + temp_w/2;
-	mid_y = temp_y + temp_h/2;
-
-	mid_x = mid_x * ctx->screen_para.valid_width[screen_idx] / screen_in_width;
-	mid_y = mid_y * ctx->screen_para.valid_height[screen_idx] / screen_in_height;
-
-    if(ctx->b_video_in_valid_area)
-    {
-        force_full_screen = 0;
-    }
-    else
-    {
-        if((rect_in->left==0 && rect_in->right==screen_in_width) || (rect_in->top==0 && rect_in->bottom==screen_in_height))
-        {
-            force_full_screen = 1;
-        }
-        else
-        {
-            force_full_screen = 0;
-        }
-    }
-
-    if(force_full_screen)
-    {
-    	if((screen_in_width == ctx->screen_para.width[screen_idx]) && (screen_in_height == ctx->screen_para.height[screen_idx]))
-    	{
-    	    rect_out->left = rect_in->left;
-    	    rect_out->right = rect_in->right;
-    	    rect_out->top = rect_in->top;
-    	    rect_out->bottom = rect_in->bottom;
-    	    return 0;
-    	}
-    
-   	 	mid_x += (ctx->screen_para.width[screen_idx] - ctx->screen_para.valid_width[screen_idx])/2;
-   	 	mid_y += (ctx->screen_para.height[screen_idx] - ctx->screen_para.valid_height[screen_idx])/2;
-		
-    	if(mid_x * temp_h >= mid_y * temp_w)
-    	{
-    	    y = 0;
-    	    h = mid_y * 2;
-    	    w = h * temp_w / temp_h;
-    	    x = mid_x - (w/2);
-    	}
-    	else
-    	{
-    	    x = 0;
-    	    w = mid_x * 2;
-    	    h = w * temp_h / temp_w;
-    	    y = mid_y - (h/2);
-    	}
+		unsigned long paddr = 0;
+		args[0] = (unsigned long) priv_handle->ump_id;
+		args[1] = (unsigned long) &paddr;
+		ioctl(ctx->m_fb_fd, GET_UMP_PHYSICAL_ADDRESS, (unsigned long) args);
+#endif
+		fb.addr[0] = priv_handle->paddr;
+		fb.addr[2] = priv_handle->paddr + priv_handle->width * priv_handle->height;
+		fb.addr[1] = fb.addr[2] + (_ALIGN(priv_handle->width /2 , 16) * priv_handle->height) / 2;
+#if 0
 	}
-    else
-    {
-        w = temp_w * ctx->screen_para.valid_width[screen_idx] / screen_in_width;
-        h = temp_h * ctx->screen_para.valid_height[screen_idx] / screen_in_height;
-        x = mid_x - (w/2);
-        y = mid_y - (h/2);
-        x += (ctx->screen_para.width[screen_idx] - ctx->screen_para.valid_width[screen_idx])/2;
-        y += (ctx->screen_para.height[screen_idx] - ctx->screen_para.valid_height[screen_idx])/2;
-    }
-	
-	temp_x = x;
-	temp_y = y;
-	temp_w = w;
-	temp_h = h;
+#endif
 
-    rect_out->left = temp_x;
-    rect_out->right = temp_x + temp_w;
-    rect_out->top = temp_y;
-    rect_out->bottom = temp_y + temp_h;
+	//ALOGE("size (%d x %d)", priv_handle->width, priv_handle->height);
+	fb.size.width = priv_handle->width;
+	fb.size.height = priv_handle->height;
 
-	RECT_LOG("#1.1 out:[%d,%d,%d,%d] [%d,%d] [%d,%d]\n", temp_x, temp_y, temp_w, temp_h,
-	    ctx->screen_para.width[screen_idx], ctx->screen_para.height[screen_idx], ctx->screen_para.valid_width[screen_idx], ctx->screen_para.valid_height[screen_idx]);
+	//fb.size.width = layer->sourceCrop.right - layer->sourceCrop.left;
+	//fb.size.height = layer->sourceCrop.bottom - layer->sourceCrop.top;
+	fb.format = DISP_FORMAT_YUV420;
+	fb.seq = DISP_SEQ_P3210;
+	fb.mode = DISP_MOD_NON_MB_PLANAR;
+	fb.cs_mode = DISP_BT709;
 
-    return 0;
-}
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	args[2] = (unsigned long) (&fb);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_SET_FB, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
 
-static int hwc_set_rect(hwc_composer_device_1_t *dev,
-        size_t numDisplays, hwc_display_contents_1_t** displays)
-{
-    int 						ret = 0;
-    sun4i_hwc_context_t   		*ctx = (sun4i_hwc_context_t *)dev;
-    unsigned long               args[4]={0};
-    int screen_idx;
-    int have_overlay = 0;
-    
-	for (size_t i=0 ; i<displays[0]->numHwLayers ; i++)         
-    {       
-        if(displays[0]->hwLayers[i].compositionType == HWC_OVERLAY)
-        {
-            ALOGV("#hwc_set_rect\n");
-            
-            hwc_rect_t croprect;
-            hwc_rect_t displayframe_src, displayframe_dst;
-            __disp_layer_info_t         layer_info;
-            
-            if(ctx->rect_in.left != displays[0]->hwLayers[i].sourceCrop.left || ctx->rect_in.right != displays[0]->hwLayers[i].sourceCrop.right 
-             ||ctx->rect_in.top != displays[0]->hwLayers[i].sourceCrop.top || ctx->rect_in.bottom != displays[0]->hwLayers[i].sourceCrop.bottom
-             ||ctx->rect_out.left != displays[0]->hwLayers[i].displayFrame.left || ctx->rect_out.right != displays[0]->hwLayers[i].displayFrame.right
-             ||ctx->rect_out.top != displays[0]->hwLayers[i].displayFrame.top || ctx->rect_out.bottom != displays[0]->hwLayers[i].displayFrame.bottom)
-            {
-                memcpy(&croprect, &displays[0]->hwLayers[i].sourceCrop, sizeof(hwc_rect_t));
-                memcpy(&displayframe_src, &displays[0]->hwLayers[i].displayFrame, sizeof(hwc_rect_t));
-
-                for(screen_idx=0; screen_idx<2; screen_idx++)
-                {
-                    if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-                    || ((screen_idx == 1) && (ctx->mode==HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-                    {
-                        if(!(ctx->cur_3denable))
-                        {
-                            int screen_in_width;
-                            int screen_in_height;
-
-                            screen_in_width                     = ctx->screen_para.app_width[0];
-                            screen_in_height                    = ctx->screen_para.app_height[0];
-
-                            RECT_LOG("#0:src[%d,%d,%d,%d], dst[%d,%d,%d,%d]\n",
-                                croprect.left, croprect.top, croprect.right-croprect.left, croprect.bottom-croprect.top,
-                                displayframe_src.left, displayframe_src.top, displayframe_src.right-displayframe_src.left, displayframe_src.bottom-displayframe_src.top);
-                            if(displayframe_src.left < 0)
-                            {
-                                croprect.left = croprect.left + ((0 - displayframe_src.left) * (croprect.right - croprect.left) / (displayframe_src.right - displayframe_src.left));
-                                displayframe_src.left = 0;
-                            }
-                            if(displayframe_src.right > screen_in_width)
-                            {
-                                croprect.right = croprect.right - ((displayframe_src.right - screen_in_width) * (croprect.right - croprect.left) / (displayframe_src.right - displayframe_src.left));
-                                displayframe_src.right = screen_in_width;
-                            }
-                            if(displayframe_src.top< 0)
-                            {
-                                croprect.top= croprect.top+ ((0 - displayframe_src.top) * (croprect.bottom- croprect.top) / (displayframe_src.bottom- displayframe_src.top));
-                                displayframe_src.top= 0;
-                            }
-                            if(displayframe_src.bottom> screen_in_height)
-                            {
-                                croprect.bottom= croprect.bottom- ((displayframe_src.bottom- screen_in_height) * (croprect.bottom- croprect.top) / (displayframe_src.bottom- displayframe_src.top));
-                                displayframe_src.bottom= screen_in_height;
-                            }
-
-                            RECT_LOG("#1:src[%d,%d,%d,%d], dst[%d,%d,%d,%d]\n",
-                                croprect.left, croprect.top, croprect.right-croprect.left, croprect.bottom-croprect.top,
-                                displayframe_src.left, displayframe_src.top, displayframe_src.right-displayframe_src.left, displayframe_src.bottom-displayframe_src.top);
-
-                            ret = hwc_computer_rect(ctx,screen_idx, &displayframe_dst, &displayframe_src);
-                            if(ret < 0)
-                            {
-                                return -1;
-                            }
-							if(ctx->layer_para_set == false)
-                           	{
-								return -1;
-							}
-                            RECT_LOG("#2:src[%d,%d,%d,%d], dst[%d,%d,%d,%d]\n",
-                                croprect.left, croprect.top, croprect.right-croprect.left, croprect.bottom-croprect.top,
-                                displayframe_dst.left, displayframe_dst.top, displayframe_dst.right-displayframe_dst.left, displayframe_dst.bottom-displayframe_dst.top);
-
-                        	args[0] 				= screen_idx;
-                        	args[1] 				= ctx->video_layerhdl[screen_idx];
-                        	args[2] 				= (unsigned long) (&layer_info);
-                        	args[3] 				= 0;
-                        	ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-                        	if(ret < 0)
-                        	{
-                    	        ALOGD("####DISP_CMD_LAYER_GET_PARA fail in hwc_set_rect, screen_idx:%d,hdl:%d\n",screen_idx,ctx->video_layerhdl[screen_idx]);
-                                return -1;
-                        	}
-
-                        	layer_info.src_win.x = croprect.left;
-                        	layer_info.src_win.y = croprect.top;
-                        	layer_info.src_win.width = croprect.right - croprect.left;
-                        	layer_info.src_win.height = croprect.bottom - croprect.top;
-                            if(ctx->cur_3d_out == HWC_3D_OUT_MODE_ANAGLAGH)
-                            {
-                                if(ctx->cur_3d_src == HWC_3D_SRC_MODE_SSF || ctx->cur_3d_src == HWC_3D_SRC_MODE_SSH)
-                                {
-                                    layer_info.src_win.x /=2;
-                                    layer_info.src_win.width /=2;
-                                }
-                                if(ctx->cur_3d_src == HWC_3D_SRC_MODE_TB)
-                                {
-                                    layer_info.src_win.y /=2;
-                                    layer_info.src_win.height /=2;
-                                }
-                            }
-                        	layer_info.scn_win.x = displayframe_dst.left;
-                        	layer_info.scn_win.y = displayframe_dst.top;
-                        	layer_info.scn_win.width = displayframe_dst.right - displayframe_dst.left;
-                        	layer_info.scn_win.height = displayframe_dst.bottom - displayframe_dst.top;
-                            
-                        	args[0] 				= screen_idx;
-                        	args[1] 				= ctx->video_layerhdl[screen_idx];
-                        	args[2] 				= (unsigned long) (&layer_info);
-                        	args[3] 				= 0;
-                        	ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-
-                            ctx->rect_out_active[screen_idx].left = displayframe_dst.left;
-                            ctx->rect_out_active[screen_idx].right = displayframe_dst.right;
-                            ctx->rect_out_active[screen_idx].top = displayframe_dst.top;
-                            ctx->rect_out_active[screen_idx].bottom = displayframe_dst.bottom;
-                        }
-                    }
-                }            
-                
-                ctx->rect_in.left = displays[0]->hwLayers[i].sourceCrop.left;
-                ctx->rect_in.right = displays[0]->hwLayers[i].sourceCrop.right;
-                ctx->rect_in.top = displays[0]->hwLayers[i].sourceCrop.top;
-                ctx->rect_in.bottom = displays[0]->hwLayers[i].sourceCrop.bottom;
-                
-                ctx->rect_out.left = displays[0]->hwLayers[i].displayFrame.left;
-                ctx->rect_out.right = displays[0]->hwLayers[i].displayFrame.right;
-                ctx->rect_out.top = displays[0]->hwLayers[i].displayFrame.top;
-                ctx->rect_out.bottom = displays[0]->hwLayers[i].displayFrame.bottom;
-            }
-            have_overlay = 1;
-        }
-    }     
-
-    //close video layer if there is not overlay
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {
-        if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (ctx->mode == HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-            if((have_overlay == 0) && (ctx->status[screen_idx] & HWC_STATUS_OPENED))
-            {
-                hwc_video_close(ctx, screen_idx);
-            }
-            else if((have_overlay) && ((ctx->status[screen_idx] & (HWC_STATUS_OPENED | HWC_STATUS_HAVE_FRAME)) == HWC_STATUS_HAVE_FRAME))
-            {
-                hwc_video_open(ctx, screen_idx);
-            }
-        }
-    }
-
-    return ret;
-}
-
-static int hwc_set_init_para(sun4i_hwc_context_t *ctx,uint32_t value,int mode_change)
-{
-    layerinitpara_t				*layer_init_para = (layerinitpara_t *)value;
-    unsigned int                screen_idx;
-
-    ALOGD("####%s, mode:%d, w:%d, h:%d, format:%d\n",
-        __FUNCTION__, ctx->mode, layer_init_para->w, layer_init_para->h, layer_init_para->format);
-    
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {
-        if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (ctx->mode==HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-            hwc_video_request(ctx, screen_idx, layer_init_para);
-        }
-    }
-    
-    ctx->w = layer_init_para->w;
-    ctx->h = layer_init_para->h;
-    ctx->format = layer_init_para->format;
-    memset(&ctx->rect_in, 0, sizeof(hwc_rect_t));
-    memset(&ctx->rect_out, 0, sizeof(hwc_rect_t));
-    ctx->cur_3denable = 0;
-
-    ctx->status[0] = HWC_STATUS_HAVE_VIDEO;
-    ctx->status[1] = HWC_STATUS_HAVE_VIDEO;
-    STATUS_LOG("#status[0]=%d in %s", ctx->status[0], __FUNCTION__);
-    STATUS_LOG("#status[1]=%d in %s", ctx->status[1], __FUNCTION__);
+	ctx->previous_handle = priv_handle;
 
 	return 0;
 }
 
-static int hwc_set_frame_para(sun4i_hwc_context_t *ctx,uint32_t value)
+static int hwc_video_set_frame_para(struct hwc_context_t *ctx, hwc_layer_1_t *layer)
 {
-    libhwclayerpara_t           *overlaypara;
-    int                         screen_idx;
+	__disp_video_fb_t video_info;
+#if 0
+	__disp_fb_t fb;
+	__disp_rect_t buf_rect;
+	__disp_rect_t win_rect;
 
-    ALOGV("####hwc_set_frame_para\n");
-    
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {
-        if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (ctx->mode==HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-            if(ctx->status[screen_idx] & HWC_STATUS_HAVE_VIDEO)
-            {
-                overlaypara = (libhwclayerpara_t*)value;
-                
-                hwc_video_set_frame_para(ctx, screen_idx, overlaypara);
-            }
-        }
-    }
-    
-    return 0;
+	buf_rect.x = layer->sourceCrop.left;
+    buf_rect.y = layer->sourceCrop.top;
+	buf_rect.width = layer->sourceCrop.right - layer->sourceCrop.left;
+	buf_rect.height = layer->sourceCrop.bottom - layer->sourceCrop.top;
+
+	win_rect.x = layer->displayFrame.left;
+    win_rect.y = layer->displayFrame.top;
+	win_rect.width = layer->displayFrame.right - layer->displayFrame.left;
+	win_rect.height = layer->displayFrame.bottom - layer->displayFrame.top;
+#endif
+
+	unsigned long args[4] = {0};
+	int ret;
+
+	private_handle_t * priv_handle = (private_handle_t*) layer->handle;
+
+#if 0
+	ALOGE("%s: u = %x v =%x", __func__, handle->picture.y, handle->picture.u);
+
+	video_info.interlace         = (handle->picture.is_progressive ? 0 : 1);
+	video_info.top_field_first   = handle->picture.top_field_first;
+	video_info.addr[0]           = (u32) handle->picture.y;
+	video_info.addr[1]           = (u32) handle->picture.u;
+	video_info.addr[2]           = 0;
+	video_info.addr_right[0]     = 0;
+	video_info.addr_right[1]     = 0;
+	video_info.addr_right[2]     = 0;
+	video_info.id                = 0; //overlaypara->number;
+	video_info.maf_valid         = handle->picture.maf_valid;
+	video_info.pre_frame_valid   = handle->picture.pre_frame_valid;
+	video_info.flag_addr         = handle->picture.flag_addr;
+	video_info.flag_stride       = handle->picture.flag_stride;
+#endif
+
+	//memset(&fb, 0, sizeof(fb));
+
+	if (priv_handle->ump_id > 0)
+	{
+		unsigned long paddr = 0;
+		args[0] = (unsigned long) priv_handle->ump_id;
+		args[1] = (unsigned long) &paddr;
+		ioctl(ctx->m_fb_fd, GET_UMP_PHYSICAL_ADDRESS, (unsigned long) args);
+
+#if 0
+		fb.addr[0] = paddr;
+		fb.addr[2] = paddr + priv_handle->uoffset;
+		fb.addr[1] = fb.addr[2] + priv_handle->voffset;
+#endif
+
+		video_info.addr[0] = paddr;
+		video_info.addr[2] = paddr + priv_handle->uoffset;
+		video_info.addr[1] = video_info.addr[2] + priv_handle->voffset;
+	}
+
+#if 0
+	fb.size.width = buf_rect.width;
+	fb.size.height = buf_rect.height;
+	fb.format = DISP_FORMAT_YUV420;
+	fb.seq = DISP_SEQ_P3210;
+	fb.mode = DISP_MOD_NON_MB_PLANAR;
+
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	args[2] = (unsigned long) (&fb);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_SET_FB, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	args[2] = (unsigned long) (&buf_rect);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_SET_SRC_WINDOW, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	args[2] = (unsigned long) (&win_rect);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_SET_SCN_WINDOW, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	ctx->have_frame = true;
+#endif
+
+#if 0
+	video_info.interlace         = (priv_handle->is_progressive ? 0 : 1);
+	video_info.top_field_first   = priv_handle->top_field_first;
+#endif
+	video_info.interlace         = 1;
+	video_info.top_field_first   = 0;
+
+	video_info.addr_right[0]     = 0;
+	video_info.addr_right[1]     = 0;
+	video_info.addr_right[2]     = 0;
+	video_info.id                = 0; //overlaypara->number;
+
+#if 0
+	video_info.maf_valid         = priv_handle->maf_valid;
+	video_info.pre_frame_valid   = priv_handle->pre_frame_valid;
+	video_info.flag_addr         = priv_handle->flag_addr;
+	video_info.flag_stride       = priv_handle->flag_stride;
+#endif
+
+	if (!ctx->have_frame)
+	{
+		__disp_layer_info_t         layer_info;
+
+		args[0]                 = 0;
+		args[1]                 = ctx->video_layerhdl;
+		args[2]                 = (unsigned long) (&layer_info);
+		args[3]                 = 0;
+		ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_GET_PARA, args);
+		if(ret < 0)
+		{
+			ALOGD("####DISP_CMD_LAYER_GET_PARA fail in %s, screen_idx:%d, hdl:%d\n",__FUNCTION__, 0, ctx->video_layerhdl);
+		}
+
+		layer_info.src_win.x = layer->sourceCrop.left;
+		layer_info.src_win.y = layer->sourceCrop.top;
+		layer_info.src_win.width = layer->sourceCrop.right - layer->sourceCrop.left;
+		layer_info.src_win.height = layer->sourceCrop.bottom - layer->sourceCrop.top;
+
+		layer_info.scn_win.x = layer->displayFrame.left;
+		layer_info.scn_win.y = layer->displayFrame.top;
+		layer_info.scn_win.width = layer->displayFrame.right - layer->displayFrame.left;
+		layer_info.scn_win.height = layer->displayFrame.bottom - layer->displayFrame.top;
+
+		layer_info.fb.addr[0]   = video_info.addr[0];
+		layer_info.fb.addr[1]   = video_info.addr[1];
+		layer_info.fb.addr[2]   = video_info.addr[2];
+		layer_info.fb.trd_right_addr[0] = video_info.addr_right[0];
+		layer_info.fb.trd_right_addr[1] = video_info.addr_right[1];
+		layer_info.fb.trd_right_addr[2] = video_info.addr_right[2];
+
+		layer_info.fb.size.width = layer_info.src_win.width;
+		layer_info.fb.size.height = layer_info.src_win.height;
+
+#if 0
+		ALOGD("src_win.x = %d src_win.y = %d src_win.width = %d src_win.height = %d", layer_info.src_win.x, layer_info.src_win.y, layer_info.src_win.width, layer_info.src_win.height);
+
+		ALOGD("scn_win.x = %d scn_win.y = %d scn_win.width = %d scn_win.height = %d", layer_info.scn_win.x, layer_info.scn_win.y, layer_info.scn_win.width, layer_info.scn_win.height);
+
+		ALOGD("layer_info.fb.size.width = %d layer_info.fb.size.height = %d", layer_info.fb.size.width, layer_info.fb.size.height);
+#endif
+
+		args[0]                 = 0;
+		args[1]                 = ctx->video_layerhdl;
+		args[2]                 = (unsigned long) (&layer_info);
+		args[3]                 = 0;
+		ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_SET_PARA, args);
+
+		ctx->have_frame = true;
+	}
+
+	args[0]                 = 0;
+	args[1]                 = ctx->video_layerhdl;
+	args[2]                 = (unsigned long) (&video_info);
+	args[3]                 = 0;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_VIDEO_SET_FB, args);
+
+	return 0;
 }
 
-
-static int hwc_get_frame_id(sun4i_hwc_context_t *ctx)
+static int sunxi_layer_set_colorkey(struct hwc_context_t *ctx, uint32_t color)
 {
-    int                         ret = -1;
-    unsigned long               args[4]={0};
+	int ret;
+	unsigned long args[4] = {0};
 
-    if(ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_GPU)
-    {
-    	args[0] = 0;
-    	args[1] = ctx->video_layerhdl[0];
-    	ret = ioctl(ctx->dispfd, DISP_CMD_VIDEO_GET_FRAME_ID, args);
-    }
-    else if(ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN1)
-    {
-        args[0] = 1;
-        args[1] = ctx->video_layerhdl[1];
-        ret = ioctl(ctx->dispfd, DISP_CMD_VIDEO_GET_FRAME_ID, args);
-    }
-    else if(ctx->mode == HWC_MODE_SCREEN0_AND_SCREEN1)
-    {
-        int ret0,ret1;
-        
-    	args[0] = 0;
-    	args[1] = ctx->video_layerhdl[0];
-    	ret0 = ioctl(ctx->dispfd, DISP_CMD_VIDEO_GET_FRAME_ID, args);
+	__disp_colorkey_t colorkey;
+	__disp_color_t disp_color;
 
-        args[0] = 1;
-        args[1] = ctx->video_layerhdl[1];
-        ret1 = ioctl(ctx->dispfd, DISP_CMD_VIDEO_GET_FRAME_ID, args);
+	disp_color.alpha = (color >> 24) & 0xFF;
+	disp_color.red   = (color >> 16) & 0xFF;
+	disp_color.green = (color >> 8)  & 0xFF;
+	disp_color.blue  = (color >> 0)  & 0xFF;
 
-        ret = (ret0<ret1)?ret0:ret1;
-    }
+	colorkey.ck_min = disp_color;
+	colorkey.ck_max = disp_color;
+	colorkey.red_match_rule   = 2;
+	colorkey.green_match_rule = 2;
+	colorkey.blue_match_rule  = 2;
 
-    if(ret <0)
-    {
-        ALOGV("####hwc_get_frame_id return -1,mode:%d\n",ctx->mode);
-    }
-    return ret;
+	args[0] = 0;
+	args[1] = (unsigned int) (&colorkey);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_SET_COLORKEY, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	//args[0] = 0;
+	//args[1] = ctx->ui_layerhdl;
+	//ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_BOTTOM, args);
+	//ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_BOTTOM, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CK_ON, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->ui_layerhdl;
+	//ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CK_ON, args);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CK_OFF, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->ui_layerhdl;
+	//ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_ALPHA_ON, args);
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_ALPHA_OFF, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	return 0;
 }
 
-static int hwc_set3dmode(sun4i_hwc_context_t *ctx,int para)
+static int sunxi_layer_disable_colorkey(struct hwc_context_t *ctx)
 {
-	video3Dinfo_t *_3d_info = (video3Dinfo_t *)para;
-    unsigned int                screen_idx;
+	int ret;
+	unsigned long args[4] = {0};
 
-    ALOGV("####%s\n", __FUNCTION__);
-    
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {
-        if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (ctx->mode==HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-            hwc_video_3d_mode(ctx, screen_idx, _3d_info);
-        }
-    }
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CK_OFF, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
 
-    return 0;
+	args[0] = 0;
+	args[1] = ctx->video_layerhdl;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_BOTTOM, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	args[0] = 0;
+	args[1] = ctx->ui_layerhdl;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_BOTTOM, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	return 0;
 }
 
-static int hwc_set_3d_parallax(sun4i_hwc_context_t *ctx,uint32_t value)
-{
-    __disp_layer_info_t         layer_info;
-    unsigned int                screen_idx;
-    int                         ret = -1;
-    unsigned long               args[4]={0};
-
-    ALOGD("####%s value:%d\n", __FUNCTION__, value);
-    
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {
-        if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (ctx->mode==HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-            args[0] = screen_idx;
-            args[1] = ctx->video_layerhdl[screen_idx];
-            args[2] = (unsigned long)&layer_info;
-            ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_GET_PARA, args);
-            if(ret < 0)
-            {
-                ALOGD("####DISP_CMD_LAYER_GET_PARA fail in %s, screen_idx:%d, hdl:%d\n",__FUNCTION__, screen_idx, ctx->video_layerhdl[screen_idx]);
-            }
-
-            if(layer_info.fb.b_trd_src && (layer_info.fb.trd_mode==DISP_3D_SRC_MODE_SSF || layer_info.fb.trd_mode==DISP_3D_SRC_MODE_SSH) && layer_info.b_trd_out)
-            {
-                args[0] = screen_idx;
-                args[1] = ctx->video_layerhdl[screen_idx];
-                args[2] = (unsigned long)&layer_info;
-                ret = ioctl(ctx->dispfd, DISP_CMD_LAYER_SET_PARA, args);
-            }
-        }
-    }
-    
-    return 0;
-}
-
+static int hwc_video_request(struct hwc_context_t * ctx, int w, int h);
+static int hwc_video_release(struct hwc_context_t * ctx);
 
 static int hwc_prepare(hwc_composer_device_1_t *dev,
-        size_t numDisplays, hwc_display_contents_1_t** displays) 
+		size_t numDisplays, hwc_display_contents_1_t** displays)
 {
-    hwc_display_contents_1_t* list = NULL;
-    if (numDisplays > 0) 
-        list = displays[0];
+	bool haveOverlay = false;
 
-    //if geometry is not changed, there is no need to do any work here
-    if (!list || (!(list->flags & HWC_GEOMETRY_CHANGED)))
-        return 0;
+    struct hwc_context_t* ctx = (struct hwc_context_t*)dev;
 
-	for (size_t i = 0 ; i < list->numHwLayers ; i++) 
-        list->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
+	int width = 0;
+	int height = 0;
 
-	//hwc_set_rect(dev, numDisplays, displays);
-	
+	for (size_t i=0 ; i < displays[0]->numHwLayers ; i++)
+	{
+		//dump_layer(&list->hwLayers[i]);
+#if 0
+		if (displays[0]->hwLayers[i].handle)
+		{
+			private_handle_t * priv_handle = (private_handle_t*) displays[0]->hwLayers[i].handle;
+
+			if (priv_handle->format == HAL_PIXEL_FORMAT_YV12)
+			{
+				displays[0]->hwLayers[i].compositionType = HWC_OVERLAY;
+				//if (!ctx->video_opened)
+				//	sunxi_layer_set_colorkey(ctx, 0x081018);
+				// hwc_video_set_frame_para(ctx, &displays[0]->hwLayers[i]);
+				if (ctx->video_layerhdl == 0)
+					hwc_video_request(ctx, priv_handle->width, priv_handle->height);
+				haveOverlay = true;
+			}
+			else
+			{
+				displays[0]->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
+			}
+		}
+		else
+#endif
+			displays[0]->hwLayers[i].compositionType = HWC_FRAMEBUFFER;
+	}
+
+	if (!haveOverlay)
+	{
+		if (ctx->video_layerhdl)
+			hwc_video_release(ctx);
+	}
+
     return 0;
 }
 
 static int hwc_set(hwc_composer_device_1_t *dev,
-        size_t numDisplays, hwc_display_contents_1_t** displays)
+		        size_t numDisplays, hwc_display_contents_1_t** displays)
 {
     //for (size_t i=0 ; i<list->numHwLayers ; i++) {
     //    dump_layer(&list->hwLayers[i]);
     //}
-    
-    hwc_display_contents_1_t* list = displays[0];
 
-    if (list)
-    {
-        if (list->sur == NULL && list->dpy == NULL)
-            return HWC_EGL_ERROR;
+	bool haveOverlay = false;
 
-        unsigned char pixels[4];
-        glReadPixels(0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
-        
-        EGLBoolean sucess = eglSwapBuffers((EGLDisplay)list->dpy,
-                (EGLSurface)list->sur);
-        if (!sucess) {
-            return HWC_EGL_ERROR;
-        }
+    EGLBoolean sucess = eglSwapBuffers((EGLDisplay) displays[0]->dpy,
+			(EGLSurface) displays[0]->sur);
+    if (!sucess) {
+        return HWC_EGL_ERROR;
     }
 
-    return 0;
-}
+	struct hwc_context_t* ctx = (struct hwc_context_t*)dev;
 
-static int hwc_set_mode(sun4i_hwc_context_t *ctx, e_hwc_mode_t mode)
-{
-    unsigned int screen_idx;
-
-    ALOGD("####%s mode:%d\n", __FUNCTION__, mode);
-
-    if(mode == ctx->mode)
-    {
-        ALOGV("####mode not change\n");
-        return 0;
-    }
-    
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {        
-        if(((screen_idx == 0) && (mode==HWC_MODE_SCREEN0 || mode==HWC_MODE_SCREEN0_AND_SCREEN1 || mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (mode==HWC_MODE_SCREEN1 || mode==HWC_MODE_SCREEN0_TO_SCREEN1 || mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-        }
-        else if((ctx->status[screen_idx] & HWC_STATUS_HAVE_VIDEO) && (ctx->video_layerhdl[screen_idx]))
-        {
-            hwc_video_release(ctx, screen_idx);
-        }
-    }
-
-    for(screen_idx=0; screen_idx<2; screen_idx++)
-    {        
-        if(((screen_idx == 0) && (mode==HWC_MODE_SCREEN0 || mode==HWC_MODE_SCREEN0_AND_SCREEN1 || mode==HWC_MODE_SCREEN0_GPU))
-            || ((screen_idx == 1) && (mode==HWC_MODE_SCREEN1 || mode==HWC_MODE_SCREEN0_TO_SCREEN1 || mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-        {
-            if((ctx->status[screen_idx] & HWC_STATUS_HAVE_VIDEO) && (ctx->video_layerhdl[screen_idx] == 0))
-            {
-                layerinitpara_t layer_init_para;
-                video3Dinfo_t _3d_info;
-            
-                layer_init_para.w = ctx->w;
-                layer_init_para.h = ctx->h;
-                layer_init_para.format = ctx->format;
-                hwc_video_request(ctx, screen_idx, &layer_init_para);
-            
-                hwc_video_set_frame_para(ctx, screen_idx, &ctx->cur_frame_para);
-                
-                _3d_info.width = ctx->cur_3d_w;
-                _3d_info.height = ctx->cur_3d_h;
-                _3d_info.format = ctx->cur_3d_format;
-                _3d_info.src_mode = ctx->cur_3d_src;
-                _3d_info.display_mode = ctx->cur_3d_out;
-                hwc_video_3d_mode(ctx, screen_idx, &_3d_info);
-            }
-        }
-    }
-
-
-    ctx->mode = mode;
-
-    return 0;
-}
-
-static int hwc_set_screen_para(sun4i_hwc_context_t *ctx,uint32_t value)
-{
-    screen_para_t *screen_info = (screen_para_t *)value;
-    
-    ALOGV("####hwc_set_screen_para,%d,%d,%d,%d,%d,%d",screen_info->app_width[0],screen_info->app_height[0],
-        screen_info->width[0],screen_info->height[0],screen_info->valid_width[0],screen_info->valid_height[0]);
-    
-    memcpy(&ctx->screen_para,screen_info,sizeof(screen_para_t));
-    
-    return 0;
-}
-
-static int hwc_set_show(sun4i_hwc_context_t *ctx,uint32_t enable)
-{
-    int screen_idx;
-
-    if(enable == 0)
-    {    
-    	ALOGD("####%s enable:%d", __FUNCTION__, enable);
-		
-        for(screen_idx=0; screen_idx<2; screen_idx++)
-        {
-            if(((screen_idx == 0) && (ctx->mode==HWC_MODE_SCREEN0 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_GPU))
-                || ((screen_idx == 1) && (ctx->mode==HWC_MODE_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_TO_SCREEN1 || ctx->mode==HWC_MODE_SCREEN0_AND_SCREEN1)))
-            {
-                hwc_video_release(ctx, screen_idx);
-            }
-        }
-        
-        ctx->status[0] = 0;
-        ctx->status[1] = 0;
-        STATUS_LOG("#status[0]=%d in %s", ctx->status[0], __FUNCTION__);
-        STATUS_LOG("#status[1]=%d in %s", ctx->status[1], __FUNCTION__);
-    }
-    return 0;
-}
-
-static int hwc_set_layer_top_bottom(sun4i_hwc_context_t *ctx,int para)
-{
-	int                         ret;
-
-	if(ctx->video_layerhdl[BOOTVIDEO_SCREEN_ID])
+	for (size_t i=0 ; i < displays[0]->numHwLayers ; i++)
 	{
-		unsigned long               args[4]={0};
-		
-		args[0]							= BOOTVIDEO_SCREEN_ID;
-		args[1]                 		= ctx->video_layerhdl[BOOTVIDEO_SCREEN_ID];
-		args[2]                 		= 0;
-		args[3]                 		= 0;
-		if(para == HWC_LAYER_SETTOP)
+		//dump_layer(&list->hwLayers[i]);
+		if (displays[0]->hwLayers[i].compositionType == HWC_OVERLAY)
 		{
-			ret                     	= ioctl(ctx->dispfd, DISP_CMD_LAYER_TOP,args);
-			if(ret != 0)
-			{
-				//open display layer failed, need send play end command, and exit
-				ALOGE("Set video display Top failed!\n");
-				return NULL;
-			}
+			hwc_video_set_frame_para(ctx, &displays[0]->hwLayers[i]);
+			haveOverlay = true;
 		}
-		else if(para == HWC_LAYER_SETBOTTOM)
-		{
-			ret                     	= ioctl(ctx->dispfd, DISP_CMD_LAYER_BOTTOM,args);
-			if(ret != 0)
-			{
-				//open display layer failed, need send play end command, and exit
-				ALOGE("Set video display Bottom failed!\n");
-				return NULL;
-			}
-		}
+	}
 
+	if (haveOverlay)
+	{
+		if (!ctx->video_opened)
+		{
+			hwc_video_open(ctx);
+			ctx->video_opened = true;
+		}
 	}
 	else
 	{
-		ALOGE("current handle is Null!\n");
-		return NULL;
+		if (ctx->video_opened)
+		{
+			hwc_video_close(ctx);
+			ctx->video_opened = false;
+		}
 	}
 
-	return ret;
-}
-
-static int hwc_setlayerorder(hwc_composer_device_1_t *dev,
-        size_t numDisplays, hwc_display_contents_1_t** displays, uint32_t para)
-{
-	sun4i_hwc_context_t   		*ctx = (sun4i_hwc_context_t *)dev;
-
-	//bootvideo = true;
-#if 0
-	if(displays[0]->numHwLayers == 1)
-	{
-		displays[0]->hwLayers[0].format = HWC_FORMAT_MBYUV420;
-	}
-#endif
-    hwc_prepare(dev, numDisplays, displays);
-	//hwc_set_rect(dev, numDisplays, displays);
-
-	return hwc_set_layer_top_bottom(ctx, para);
-}
-
-static int hwc_setparameter(hwc_composer_device_1 *dev,uint32_t param,uint32_t value)
-{
-	int 						ret = 0;
-    sun4i_hwc_context_t   		*ctx = (sun4i_hwc_context_t *)dev;
-	
-    if(param == HWC_LAYER_SETINITPARA)
-    {
-    	ret = hwc_set_init_para(ctx,value, 0);
-    }
-    else if(param == HWC_LAYER_SETFRAMEPARA)
-    {
-    	ret = hwc_set_frame_para(ctx,value);
-    }
-    else if(param == HWC_LAYER_GETCURFRAMEPARA)
-    {
-    	ret = hwc_get_frame_id(ctx);
-    }
-    else if(param == HWC_LAYER_SETMODE)
-    {
-        ret = hwc_set_mode(ctx, (e_hwc_mode_t)value);
-    }
-	else if(param == HWC_LAYER_SET3DMODE)
-	{
-	    ret = hwc_set3dmode(ctx,value);
-	}
-	else if(param == HWC_LAYER_SET_3D_PARALLAX)
-	{
-	    ret = hwc_set_3d_parallax(ctx,value);
-	}
-	else if(param == HWC_LAYER_SET_SCREEN_PARA)
-	{
-	    ret = hwc_set_screen_para(ctx,value);
-	}
-	else if(param == HWC_LAYER_SHOW)
-	{
-	    ret = hwc_set_show(ctx,value);
-	}
-
-    return ( ret );
-}
-
-static uint32_t hwc_getparameter(hwc_composer_device_1 *dev,uint32_t param)
-{
     return 0;
 }
 
+static int hwc_device_close(struct hw_device_t *dev)
+{
+    struct hwc_context_t* ctx = (struct hwc_context_t*)dev;
+    if (ctx) {
+        free(ctx);
+    }
+    return 0;
+}
+
+static int hwc_video_request(struct hwc_context_t * ctx, int w, int h)
+{
+	int ret;
+	unsigned long args[4] = {0};
+	__disp_layer_info_t layer_info;
+	__disp_colorkey_t ck;
+
+	ioctl(ctx->m_fb_fd, FBIOGET_LAYER_HDL_0, &ctx->ui_layerhdl);
+
+	args[0] = 0;
+	ctx->video_layerhdl = (uint32_t) ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_REQUEST, args);
+
+	if (ctx->video_layerhdl == 0)
+		return -1;
+
+	memset(&layer_info, 0, sizeof(__disp_layer_info_t));
+
+	layer_info.fb.cs_mode = DISP_BT709;
+	layer_info.fb.format = DISP_FORMAT_YUV420;
+	layer_info.fb.mode = DISP_MOD_NON_MB_PLANAR;
+	layer_info.fb.seq = DISP_SEQ_P3210;
+
+	layer_info.fb.br_swap         = 0;
+	layer_info.fb.addr[0]         = 0;
+	layer_info.fb.addr[1]         = 0;
+	layer_info.fb.addr[2]         = 0;
+	layer_info.fb.size.width      = w;
+	layer_info.fb.size.height     = h;
+	layer_info.mode               = DISP_LAYER_WORK_MODE_SCALER;
+	layer_info.alpha_en           = 1;
+	layer_info.alpha_val          = 0xff;
+	layer_info.pipe               = 1;
+	layer_info.src_win.x          = 0;
+	layer_info.src_win.y          = 0;
+	layer_info.src_win.width      = 1;
+	layer_info.src_win.height     = 1;
+	layer_info.scn_win.x          = 0;
+	layer_info.scn_win.y          = 0;
+	layer_info.scn_win.width      = 1;
+	layer_info.scn_win.height     = 1;
+
+	args[0]                         = 0;
+	args[1]                         = ctx->video_layerhdl;
+	args[2]                         = (unsigned long) (&layer_info);
+	args[3]                         = 0;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_SET_PARA, args);
+	ALOGE_IF(ret != 0, "error %d", __LINE__);
+
+	sunxi_layer_set_colorkey(ctx, 0x081018);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_BOTTOM, args);
+
+	ck.ck_min.alpha                 = 0x00;
+	ck.ck_min.red                   = 0x08; //0x01;
+	ck.ck_min.green                 = 0x10; //0x03;
+	ck.ck_min.blue                  = 0x18; //0x05;
+	ck.ck_max.alpha                 = 0x00;
+	ck.ck_max.red                   = 0x08; //0x01;
+	ck.ck_max.green                 = 0x10; //0x03;
+	ck.ck_max.blue                  = 0x18; //0x05;
+	ck.red_match_rule               = 2;
+	ck.green_match_rule             = 2;
+	ck.blue_match_rule              = 2;
+	args[0]                         = 0;
+	args[1]                         = (unsigned long) &ck;
+	ioctl(ctx->m_disp_fd, DISP_CMD_SET_COLORKEY, (void*) args);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->ui_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CK_OFF, (void*) args);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->ui_layerhdl;
+	args[2]                         = (unsigned long) (&layer_info);
+	args[3]                         = 0;
+	ret = ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_GET_PARA, args);
+	if (ret < 0)
+	{
+		ALOGE("DISP_CMD_LAYER_GET_PARA fail");
+	}
+
+	args[0]                     	= 0;
+	args[1]                     	= ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CK_ON, (void*) args);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->ui_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_ALPHA_OFF, args);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_VIDEO_START, args);
+
+	return 0;
+}
+
+static int hwc_video_release(struct hwc_context_t * ctx)
+{
+	int ret;
+	unsigned long args[4] = {0};
+
+	args[0]                         = 0;
+    args[1]                         = ctx->video_layerhdl;
+    ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_CLOSE, args);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_VIDEO_STOP, args);
+
+	usleep(20 * 1000);
+
+	args[0]                         = 0;
+	args[1]                         = ctx->video_layerhdl;
+	ioctl(ctx->m_disp_fd, DISP_CMD_LAYER_RELEASE, args);
+
+	ctx->video_layerhdl = 0;
+
+	return 0;
+}
+
+extern "C" int clock_nanosleep(clockid_t clock_id, int flags,
+		const struct timespec *request,
+		struct timespec *remain);
+
+//#define DEBUG_HWC_VSYNC_TIMING 1
+
 static void *hwc_vsync_thread(void *data)
 {
-    #define HZ 60
-    struct timespec spec;
-    int err = 0;
-    nsecs_t period, now, next_vsync, sleep, next_fake_vsync = 0;
-    hwc_context_t *ctx = (hwc_context_t *)data;
-    int fb = open("/dev/graphics/fb0", O_RDWR);
-    if(fb < 0) {
-        ALOGE("failed to open fb0\n");
-        return NULL;
+#if 0
+#define HWC_VSYNC_THREAD_NAME "hwcVsyncThread"
+
+	const char* vsync_timestamp_fb0 = "/sys/class/disp/disp/attr/vsync0_event";
+
+	hwc_context_t *ctx = (hwc_context_t *) data;
+
+	char thread_name[64] = HWC_VSYNC_THREAD_NAME;
+	prctl(PR_SET_NAME, (unsigned long) &thread_name, 0, 0, 0);
+	setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY +
+			ANDROID_PRIORITY_MORE_FAVORABLE);
+
+	const int MAX_DATA = 64;
+	static char vdata[MAX_DATA];
+
+	uint64_t cur_timestamp=0;
+	ssize_t len = -1;
+	int fd_timestamp = -1;
+	int ret = 0;
+	bool fb1_vsync = false;
+	bool fakevsync = false;
+	bool logvsync = false;
+
+	char property[PROPERTY_VALUE_MAX];
+	if(property_get("debug.hwc.fakevsync", property, NULL) > 0) {
+		if(atoi(property) == 1)
+			fakevsync = true;
+	}
+
+	if(property_get("debug.hwc.logvsync", property, 0) > 0) {
+		if(atoi(property) == 1)
+			logvsync = true;
+	}
+
+    /* Currently read vsync timestamp from drivers
+       e.g. VSYNC=41800875994
+       */
+    fd_timestamp = open(vsync_timestamp_fb0, O_RDONLY);
+    if (fd_timestamp < 0) {
+        // Make sure fb device is opened before starting this thread so this
+        // never happens.
+        ALOGE ("FATAL:%s:not able to open file:%s, %s",  __FUNCTION__,
+               vsync_timestamp_fb0,
+               strerror(errno));
+        fakevsync = true;
     }
 
-    setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
-
-    while (true) {
-        period = 1000000000/HZ;
-        now = systemTime(CLOCK_MONOTONIC);
-        next_vsync = next_fake_vsync;
-        sleep = next_vsync - now;
-        if (sleep < 0) {
-            // we missed, find where the next vsync should be
-            sleep = (period - ((now - next_vsync) % period));
-            next_vsync = now + sleep;
+    do {
+        if (!fakevsync) {
+            len = pread(fd_timestamp, vdata, MAX_DATA, 0);
+            if (len < 0) {
+                // If the read was just interrupted - it is not a fatal error
+                // In either case, just continue.
+                if (errno != EAGAIN &&
+                    errno != EINTR  &&
+                    errno != EBUSY) {
+                    ALOGE ("FATAL:%s:not able to read file:%s, %s",
+                           __FUNCTION__,
+                           vsync_timestamp_fb0, strerror(errno));
+                }
+                continue;
+            }
+            // extract timestamp
+            const char *str = vdata;
+            if (!strncmp(str, "VSYNC=", strlen("VSYNC="))) {
+                cur_timestamp = strtoull(str + strlen("VSYNC="), NULL, 0);
+            }
+        } else {
+            usleep(16666);
+            cur_timestamp = systemTime();
         }
-        next_fake_vsync = next_vsync + period;
+        // send timestamp to HAL
+        if(ctx->vsync_enabled) {
+            ALOGD_IF (logvsync, "%s: timestamp %llu sent to HWC for %s",
+                      __FUNCTION__, cur_timestamp, "fb0");
+            ctx->m_callback->vsync(ctx->m_callback, 0, cur_timestamp);
+        }
 
-        spec.tv_sec  = next_vsync / 1000000000;
-        spec.tv_nsec = next_vsync % 1000000000;
+    } while (true);
 
-        do {
-            err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &spec, NULL);
-        } while (err < 0 && errno == EINTR);
-
-/*      arg = 0;
-        //ioctl(fb, FBIO_WAITFORVSYNC, &arg);
-*/
-        if (ctx->vsync_enabled)
-            ctx->procs->vsync(ctx->procs, 0, next_vsync);
-    }
-
-    close(fb);
+    if(fd_timestamp >= 0)
+        close (fd_timestamp);
 
     return NULL;
+
+#endif
+
+#if 0
+	struct sockaddr_nl snl;
+	const int buffersize = 16*1024;
+	int retval;
+	int hotplug_sock;
+
+	setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
+
+	hwc_context_t *ctx = (hwc_context_t *) data;
+
+	memset(&snl, 0x0, sizeof(snl));
+	snl.nl_family = AF_NETLINK;
+	snl.nl_pid = getpid();
+	snl.nl_groups = 0xffffffff;
+
+	hotplug_sock = socket(PF_NETLINK, SOCK_DGRAM, NETLINK_KOBJECT_UEVENT);
+	if (hotplug_sock == -1) {
+		ALOGE("####socket is failed in %s error:%d %s\n", __FUNCTION__, errno, strerror(errno));
+		return NULL;
+	}
+
+	setsockopt(hotplug_sock, SOL_SOCKET, SO_RCVBUFFORCE, &buffersize, sizeof(buffersize));
+
+	retval = bind(hotplug_sock, (struct sockaddr *)&snl, sizeof(struct sockaddr_nl));
+
+	if (retval < 0) {
+		ALOGE("####bind is failed in %s error:%d %s\n", __FUNCTION__, errno, strerror(errno));
+		close(hotplug_sock);
+		return NULL;
+	}
+
+	while(1)
+	{
+		char buf[4096*2] = {0};
+		struct pollfd fds;
+		int err;
+
+		fds.fd = hotplug_sock;
+		fds.events = POLLIN;
+		fds.revents = 0;
+
+		err = poll(&fds, 1, 256);
+
+		if(err > 0 && fds.events == POLLIN)
+		{
+			int count = recv(hotplug_sock, &buf, sizeof(buf),0);
+			if(count > 0)
+			{
+				int IsVsync = !strcmp(buf, "change@/devices/platform/disp");
+
+				if (IsVsync && ctx->vsync_enabled)
+				{
+					uint64_t timestamp = 0;
+					unsigned int display_id = -1;
+					const char *s = buf;
+
+					s += strlen(s) + 1;
+					while(s)
+					{
+						if (!strncmp(s, "VSYNC0=", strlen("VSYNC0=")))
+						{
+							timestamp = strtoull(s + strlen("VSYNC0="), NULL, 0);
+							ALOGV("#### %s display0 timestamp:%lld", s,timestamp);
+							display_id = 0;
+						}
+						else if (!strncmp(s, "VSYNC1=", strlen("VSYNC1=")))
+						{
+							timestamp = strtoull(s + strlen("VSYNC1="), NULL, 0);
+							ALOGV("#### %s display1 timestamp:%lld", s,timestamp);
+							display_id = 1;
+						}
+
+						s += strlen(s) + 1;
+						if(s - buf >= count)
+						{
+							break;
+						}
+					}
+
+					if(display_id == 0)//only handle display 0 vsync event now
+					{
+#ifdef DEBUG_HWC_VSYNC_TIMING
+						static nsecs_t last_time_ns;
+						nsecs_t cur_time_ns;
+
+						cur_time_ns  = systemTime(SYSTEM_TIME_MONOTONIC);
+						ctx->m_callback->vsync(ctx->m_callback, 0, timestamp);
+						ALOGE("Vsync %llu, %llu\n", cur_time_ns - last_time_ns,
+								cur_time_ns - timestamp);
+						last_time_ns = cur_time_ns;
+#else
+						ctx->m_callback->vsync(ctx->m_callback, 0, timestamp);
+#endif
+					}
+				}
+			}
+		}
+	}
+#endif
+
+#if 1
+#define HZ 30
+	struct timespec spec;
+	int err = 0;
+	nsecs_t period, now, next_vsync, sleep, next_fake_vsync = 0;
+	hwc_context_t *ctx = (hwc_context_t *) data;
+
+	setpriority(PRIO_PROCESS, 0, HAL_PRIORITY_URGENT_DISPLAY);
+
+	while (true) {
+		period = 1000000000/HZ;
+		next_vsync = next_fake_vsync;
+		sleep = next_vsync - now;
+		if (sleep < 0) {
+			// we missed, find where the next vsync should be
+			sleep = (period - ((now - next_vsync) % period));
+			next_vsync = now + sleep;
+		}
+		next_fake_vsync = next_vsync + period;
+
+		spec.tv_sec  = next_vsync / 1000000000;
+		spec.tv_nsec = next_vsync % 1000000000;
+
+		do {
+			err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &spec, NULL);
+		} while (err < 0 && errno == EINTR);
+
+		if (ctx->vsync_enabled)
+			ctx->m_callback->vsync(ctx->m_callback, 0, next_vsync);
+	}
+#endif
+
+	return NULL;
 }
 
 static int hwc_blank(hwc_composer_device_1* a, int b, int c)
 {
-    /* STUB */
-    return 0;
+	/* STUB */
+	return 0;
 }
 
 static int hwc_eventControl(hwc_composer_device_1* dev, int dpy, int event,
-                            int enabled)
+		int enabled)
 {
-    struct hwc_context_t* ctx = (sun4i_hwc_context_t*) dev;
+	unsigned long args[4] = {0};
 
-    switch (event) {
-    case HWC_EVENT_VSYNC:
-        ctx->vsync_enabled = !!enabled;
-        return 0;
-    }
-    return -EINVAL;
+	struct hwc_context_t* ctx = (struct hwc_context_t *) dev;
+
+	switch (event) {
+		case HWC_EVENT_VSYNC:
+			args[0] = 0;
+			args[1] = !!enabled;
+			ioctl(ctx->m_disp_fd, DISP_CMD_VSYNC_EVENT_EN, (unsigned long) args);
+			ctx->vsync_enabled = !!enabled;
+			return 0;
+	}
+	return -EINVAL;
 }
 
 static void hwc_registerProcs(struct hwc_composer_device_1* dev,
-        hwc_procs_t const* procs)
+		hwc_procs_t const* procs)
 {
-    struct hwc_context_t* ctx = (struct hwc_context_t*)dev;
-    ctx->procs = const_cast<hwc_procs_t *>(procs);
+	struct hwc_context_t* ctx = (struct hwc_context_t*)dev;
+	ctx->m_callback = const_cast<hwc_procs_t *>(procs);
 }
 
-static int hwc_init(sun4i_hwc_context_t *ctx)
-{
-	unsigned long               arg[4]={0};
-    __disp_init_t init_para;
-
-    ctx->dispfd = open("/dev/disp", O_RDWR);
-    if (ctx->dispfd < 0)
-    {
-        ALOGE("Failed to open disp device, ret:%d, errno: %d\n", ctx->dispfd, errno);
-        return  -1;
-    }
-    
-    ctx->mFD_fb[0] = open("/dev/graphics/fb0", O_RDWR);
-    if (ctx->mFD_fb[0] < 0)
-    {
-        ALOGE("Failed to open fb0 device, ret:%d, errno:%d\n", ctx->mFD_fb[0], errno);
-        return  -1;
-    }
-    
-    ctx->mFD_fb[1] = open("/dev/graphics/fb1", O_RDWR);
-    if (ctx->mFD_fb[1] < 0)
-    {
-        ALOGE("Failed to open fb1 device, ret:%d, errno:%d\n", ctx->mFD_fb[1], errno);
-        return  -1;
-    }
-    
-    arg[0] = (unsigned long)&init_para;
-    ioctl(ctx->dispfd,DISP_CMD_GET_DISP_INIT_PARA,(unsigned long)arg);
-
-    if(init_para.disp_mode == DISP_INIT_MODE_SCREEN0_PARTLY)
-    {
-    	ctx->mode = HWC_MODE_SCREEN0_GPU;
-	}
-	else
-	{
-	    ctx->mode = HWC_MODE_SCREEN0;
-	}
-
-	ctx->b_video_in_valid_area = 0;
-
-    return 0;
-}
-
-
-static int hwc_device_close(struct hw_device_t *dev)
-{
-    //sun4i_hwc_context_t* ctx = (sun4i_hwc_context_t*)dev;
-
-    //hwc_release(ctx);
-    return 0;
-}
 
 /*****************************************************************************/
 
@@ -1435,44 +934,48 @@ static int hwc_device_open(const struct hw_module_t* module, const char* name,
         struct hw_device_t** device)
 {
     int status = -EINVAL;
-    if (!strcmp(name, HWC_HARDWARE_COMPOSER)) 
-    {
-        sun4i_hwc_context_t *dev;
-        dev = (sun4i_hwc_context_t*)malloc(sizeof(*dev));
+    if (!strcmp(name, HWC_HARDWARE_COMPOSER)) {
+        struct hwc_context_t *dev;
+        dev = (hwc_context_t*)malloc(sizeof(*dev));
 
         /* initialize our state here */
         memset(dev, 0, sizeof(*dev));
 
         /* initialize the procs */
-        dev->device.common.tag      = HARDWARE_DEVICE_TAG;
-        dev->device.common.version  = HWC_DEVICE_API_VERSION_1_0;  //0
-        dev->device.common.module   = const_cast<hw_module_t*>(module);
-        dev->device.common.close    = hwc_device_close;
+        dev->device.common.tag = HARDWARE_DEVICE_TAG;
+        dev->device.common.version = HWC_DEVICE_API_VERSION_1_0;
+        dev->device.common.module = const_cast<hw_module_t*>(module);
+        dev->device.common.close = hwc_device_close;
 
-        dev->device.prepare         = hwc_prepare;
-        dev->device.set             = hwc_set;
-        dev->device.blank           = hwc_blank;
-        dev->device.eventControl    = hwc_eventControl;
-        dev->device.registerProcs   = hwc_registerProcs;
-        //dev->device.setparameter    = hwc_setparameter;
-        //dev->device.getparameter    = hwc_getparameter;
-        //dev->device.setlayerorder    = hwc_setlayerorder;
+        dev->device.prepare = hwc_prepare;
+        dev->device.set = hwc_set;
+		dev->device.blank = hwc_blank;
+		dev->device.eventControl = hwc_eventControl;
+		dev->device.registerProcs = hwc_registerProcs;
+
+		dev->m_disp_fd = open("/dev/disp", O_RDWR);
+		if (dev->m_disp_fd < 0)
+		{
+			ALOGE("Failed to open disp device, ret: %d, errno: %d", dev->m_disp_fd, errno);
+			return -1;
+		}
+
+		dev->m_fb_fd = open("/dev/graphics/fb0", O_RDWR);
+		if (dev->m_fb_fd < 0)
+		{
+			ALOGE("Failed to open fb0 device, ret: %d, errno: %d", dev->m_fb_fd, errno);
+			close(dev->m_disp_fd);
+			return -1;
+		}
 
         *device = &dev->device.common;
         status = 0;
-        dev->layer_para_set = false;
 
-        hwc_init(dev);
-
-        if(dev->device.common.version == HWC_DEVICE_API_VERSION_1_0)
-        {
-            status = pthread_create(&dev->vsync_thread, NULL, hwc_vsync_thread, dev);
-            if (status) {
-	        ALOGE("%s::pthread_create() failed : %s", __func__, strerror(status));
-	        status = -status;
-            }
-        }
+		status = pthread_create(&dev->vsync_thread, NULL, hwc_vsync_thread, dev);
+		if (status) {
+			ALOGE("%s::pthread_create() failed : %s", __func__, strerror(status));
+			status = -status;
+		}
     }
     return status;
 }
-

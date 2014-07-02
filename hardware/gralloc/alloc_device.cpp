@@ -1,17 +1,6 @@
 /*
  * Copyright (C) 2010 ARM Limited. All rights reserved.
  *
- * Portions of this code have been modified from the original.
- * These modifications are:
- *    * includes
- *    * gralloc_alloc_buffer()
- *    * gralloc_alloc_framebuffer_locked()
- *    * gralloc_alloc_framebuffer()
- *    * alloc_device_alloc()
- *    * alloc_device_free()
- *    * alloc_device_close()
- *    * alloc_device_open()
- *
  * Copyright (C) 2008 The Android Open Source Project
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,372 +25,603 @@
 #include <hardware/hardware.h>
 #include <hardware/gralloc.h>
 
+#include <sys/ioctl.h>
+#include <fcntl.h>
+
+#include "alloc_device.h"
 #include "gralloc_priv.h"
 #include "gralloc_helper.h"
 #include "framebuffer_device.h"
 
-#include "ump.h"
-#include "ump_ref_drv.h"
-
-/*****************************************************************************/
-#include <limits.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
-#include <pthread.h>
-#include <stdlib.h>
-
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-#include <sys/ioctl.h>
-
-#if HAVE_ANDROID_OS
-#include <linux/android_pmem.h>
-#include <pixelflinger/format.h>
+#if GRALLOC_ARM_UMP_MODULE
+#include <ump/ump.h>
+#include <ump/ump_ref_drv.h>
 #endif
 
-#ifdef SAMSUNG_EXYNOS4x12
-#define PFX_NODE_FIMC1   "/dev/video3"
-#endif
-#ifdef SAMSUNG_EXYNOS4210
-#define PFX_NODE_FIMC1   "/dev/video1"
+#if GRALLOC_ARM_DMA_BUF_MODULE
+#include <linux/ion.h>
+#include <ion/ion.h>
 #endif
 
-#ifndef OMX_COLOR_FormatYUV420Planar
-#define OMX_COLOR_FormatYUV420Planar 0x13
-#endif
+#define GRALLOC_ALIGN( value, base ) (((value) + ((base) - 1)) & ~((base) - 1))
 
-#ifndef OMX_COLOR_FormatYUV420SemiPlanar
-#define OMX_COLOR_FormatYUV420SemiPlanar 0x15
-#endif
 
-#define PFX_NODE_MEM   "/dev/fimg2d"
-#define MALI_DDK_VERSION_R3P1 0
-static int gMemfd = 0;
+#if GRALLOC_SIMULATE_FAILURES
+#include <cutils/properties.h>
 
-bool ion_dev_open = true;
-static pthread_mutex_t l_surface= PTHREAD_MUTEX_INITIALIZER;
-static int buffer_offset = 0;
-static int gfd = 0;
+/* system property keys for controlling simulated UMP allocation failures */
+#define PROP_MALI_TEST_GRALLOC_FAIL_FIRST     "mali.test.gralloc.fail_first"
+#define PROP_MALI_TEST_GRALLOC_FAIL_INTERVAL  "mali.test.gralloc.fail_interval"
 
-#ifdef USE_PARTIAL_FLUSH
-extern struct private_handle_rect *rect_list;
-extern private_handle_rect *find_rect(int secure_id);
-extern private_handle_rect *find_last_rect(int secure_id);
-extern int release_rect(int secure_id);
-#endif
-
-#define EXYNOS4_ALIGN( value, base ) (((value) + ((base) - 1)) & ~((base) - 1))
-
-static int gralloc_alloc_buffer(alloc_device_t* dev, size_t size, int usage,
-                                buffer_handle_t* pHandle, int w, int h,
-                                int format, int bpp, int stride_raw, int stride)
+static int __ump_alloc_should_fail()
 {
-    ump_handle ump_mem_handle;
-    void *cpu_ptr;
-    ump_secure_id ump_id;
 
-    size = round_up_to_page_size(size);
-    {
-        int priv_alloc_flag = private_handle_t::PRIV_FLAGS_USES_UMP;
+	static unsigned int call_count  = 0;
+	unsigned int        first_fail  = 0;
+	int                 fail_period = 0;
+	int                 fail        = 0;
 
-        ump_mem_handle = ump_ref_drv_allocate(size, UMP_REF_DRV_CONSTRAINT_NONE);
+	++call_count;
 
-        if (UMP_INVALID_MEMORY_HANDLE != ump_mem_handle) {
-            cpu_ptr = ump_mapped_pointer_get(ump_mem_handle);
-            if (NULL != cpu_ptr) {
-                ump_id = ump_secure_id_get(ump_mem_handle);
-                if (UMP_INVALID_SECURE_ID != ump_id) {
-                    private_handle_t* hnd;
-                    hnd = new private_handle_t(priv_alloc_flag, size, (int)cpu_ptr,
-                    private_handle_t::LOCK_STATE_MAPPED, ump_id, ump_mem_handle, 0, 0, 0);
-                    if (NULL != hnd) {
-                        *pHandle = hnd;
-#ifdef USE_PARTIAL_FLUSH
-                        if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_UMP) {
-                            private_handle_rect *psRect;
-                            private_handle_rect *psFRect;
-                            psRect = (private_handle_rect *)calloc(1, sizeof(private_handle_rect));
-                            psRect->handle = (int)hnd->ump_id;
-                            psRect->stride = (int)hnd->stride_raw;
-                            psFRect = find_last_rect((int)hnd->ump_id);
-                            psFRect->next = psRect;
-                        }
+	/* read the system properties that control failure simulation */
+	{
+		char prop_value[PROPERTY_VALUE_MAX];
+
+		if (property_get(PROP_MALI_TEST_GRALLOC_FAIL_FIRST, prop_value, "0") > 0)
+		{
+			sscanf(prop_value, "%u", &first_fail);
+		}
+
+		if (property_get(PROP_MALI_TEST_GRALLOC_FAIL_INTERVAL, prop_value, "0") > 0)
+		{
+			sscanf(prop_value, "%u", &fail_period);
+		}
+	}
+
+	/* failure simulation is enabled by setting the first_fail property to non-zero */
+	if (first_fail > 0)
+	{
+		LOGI("iteration %u (fail=%u, period=%u)\n", call_count, first_fail, fail_period);
+
+		fail = (call_count == first_fail) ||
+		       (call_count > first_fail && fail_period > 0 && 0 == (call_count - first_fail) % fail_period);
+
+		if (fail)
+		{
+			AERR("failed ump_ref_drv_allocate on iteration #%d\n", call_count);
+		}
+	}
+
+	return fail;
+}
 #endif
-                        hnd->format = format;
-                        hnd->usage = usage;
-                        hnd->width = w;
-                        hnd->height = h;
-                        hnd->bpp = bpp;
-                        hnd->stride = stride;
 
-                        int display_height_align;
-                        int display_width_align;
-                        display_height_align = (hnd->height + 1) & (~1);
-                        display_width_align  = (hnd->width + 15) & (~15);
-                        if (display_height_align % 8 != 0)
-                        {
-                            if ((display_width_align * display_height_align) % 256 != 0)
-                            {
-                                display_height_align = (display_height_align + 7) & ~7;
-                            }
-                        }
 
-                        hnd->uoffset = display_width_align * display_height_align;
-                        int dst_c_stride = (hnd->width / 2 + 15) & (~15);
-                        hnd->voffset = dst_c_stride * (display_height_align / 2);
+static int gralloc_alloc_buffer(alloc_device_t *dev, size_t size, int usage, buffer_handle_t *pHandle)
+{
+#if GRALLOC_ARM_DMA_BUF_MODULE
+	{
+		private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
+		struct ion_handle *ion_hnd;
+		unsigned char *cpu_ptr;
+		int shared_fd;
+		int ret;
 
-                        return 0;
-                    } else {
-                        ALOGE("gralloc_alloc_buffer() failed to allocate handle");
-                    }
-                } else {
-                    ALOGE("gralloc_alloc_buffer() failed to retrieve valid secure id");
-                }
+		ret = ion_alloc(m->ion_client, size, 0, ION_HEAP_SYSTEM_MASK, 0, &ion_hnd);
 
-                ump_mapped_pointer_release(ump_mem_handle);
-            } else {
-                ALOGE("gralloc_alloc_buffer() failed to map UMP memory");
-            }
+		if (ret != 0)
+		{
+			AERR("Failed to ion_alloc from ion_client:%d", m->ion_client);
+			return -1;
+		}
 
-            ump_reference_release(ump_mem_handle);
-        } else {
-            ALOGE("gralloc_alloc_buffer() failed to allcoate UMP memory");
-        }
-    }
-    return -1;
+		ret = ion_share(m->ion_client, ion_hnd, &shared_fd);
+
+		if (ret != 0)
+		{
+			AERR("ion_share( %d ) failed", m->ion_client);
+
+			if (0 != ion_free(m->ion_client, ion_hnd))
+			{
+				AERR("ion_free( %d ) failed", m->ion_client);
+			}
+
+			return -1;
+		}
+
+		cpu_ptr = (unsigned char *)mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shared_fd, 0);
+
+		if (MAP_FAILED == cpu_ptr)
+		{
+			AERR("ion_map( %d ) failed", m->ion_client);
+
+			if (0 != ion_free(m->ion_client, ion_hnd))
+			{
+				AERR("ion_free( %d ) failed", m->ion_client);
+			}
+
+			close(shared_fd);
+			return -1;
+		}
+
+		private_handle_t *hnd = new private_handle_t(private_handle_t::PRIV_FLAGS_USES_ION, usage, size, (int)cpu_ptr, private_handle_t::LOCK_STATE_MAPPED);
+
+		if (NULL != hnd)
+		{
+			hnd->share_fd = shared_fd;
+			hnd->ion_hnd = ion_hnd;
+			*pHandle = hnd;
+			return 0;
+		}
+		else
+		{
+			AERR("Gralloc out of mem for ion_client:%d", m->ion_client);
+		}
+
+		close(shared_fd);
+		ret = munmap(cpu_ptr, size);
+
+		if (0 != ret)
+		{
+			AERR("munmap failed for base:%p size: %d", cpu_ptr, size);
+		}
+
+		ret = ion_free(m->ion_client, ion_hnd);
+
+		if (0 != ret)
+		{
+			AERR("ion_free( %d ) failed", m->ion_client);
+		}
+
+		return -1;
+	}
+#endif
+
+#if GRALLOC_ARM_UMP_MODULE
+	{
+		ump_handle ump_mem_handle;
+		void *cpu_ptr;
+		ump_secure_id ump_id;
+		ump_alloc_constraints constraints;
+
+		size = round_up_to_page_size(size);
+
+		if ((usage & GRALLOC_USAGE_SW_READ_MASK) == GRALLOC_USAGE_SW_READ_OFTEN)
+		{
+			constraints =  UMP_REF_DRV_CONSTRAINT_USE_CACHE;
+		}
+		else
+		{
+			constraints = UMP_REF_DRV_CONSTRAINT_NONE;
+		}
+
+#ifdef GRALLOC_SIMULATE_FAILURES
+		/* if the failure condition matches, fail this iteration */
+		if (__ump_alloc_should_fail())
+		{
+			ump_mem_handle = UMP_INVALID_MEMORY_HANDLE;
+		}
+		else
+#endif
+		{
+			ump_mem_handle = ump_ref_drv_allocate(size, constraints);
+
+			if (UMP_INVALID_MEMORY_HANDLE != ump_mem_handle)
+			{
+				cpu_ptr = ump_mapped_pointer_get(ump_mem_handle);
+
+				if (NULL != cpu_ptr)
+				{
+					ump_id = ump_secure_id_get(ump_mem_handle);
+
+					if (UMP_INVALID_SECURE_ID != ump_id)
+					{
+						private_handle_t *hnd = new private_handle_t(private_handle_t::PRIV_FLAGS_USES_UMP, usage, size, (int)cpu_ptr,
+						private_handle_t::LOCK_STATE_MAPPED, ump_id, ump_mem_handle);
+
+						if (NULL != hnd)
+						{
+							*pHandle = hnd;
+							return 0;
+						}
+						else
+						{
+							AERR("gralloc_alloc_buffer() failed to allocate handle. ump_handle = %p, ump_id = %d", ump_mem_handle, ump_id);
+						}
+					}
+					else
+					{
+						AERR("gralloc_alloc_buffer() failed to retrieve valid secure id. ump_handle = %p", ump_mem_handle);
+					}
+
+					ump_mapped_pointer_release(ump_mem_handle);
+				}
+				else
+				{
+					AERR("gralloc_alloc_buffer() failed to map UMP memory. ump_handle = %p", ump_mem_handle);
+				}
+
+				ump_reference_release(ump_mem_handle);
+			}
+			else
+			{
+				AERR("gralloc_alloc_buffer() failed to allocate UMP memory. size:%d constraints: %d", size, constraints);
+			}
+		}
+		return -1;
+	}
+#endif
+
 }
 
-static int gralloc_alloc_framebuffer_locked(alloc_device_t* dev, size_t size, int usage,
-                                            buffer_handle_t* pHandle, int w, int h,
-                                            int format, int bpp)
+static int gralloc_alloc_framebuffer_locked(alloc_device_t *dev, size_t size, int usage, buffer_handle_t *pHandle)
 {
-    private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
-    /* allocate the framebuffer */
-    if (m->framebuffer == NULL) {
-        /* initialize the framebuffer, the framebuffer is mapped once and forever. */
-        int err = init_frame_buffer_locked(m);
-        if (err < 0)
-        {
-            return err;
-        }
-    }
+	private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
 
-    const uint32_t bufferMask = m->bufferMask;
-    const uint32_t numBuffers = m->numBuffers;
-    const size_t bufferSize = m->finfo.line_length * m->info.yres;
-    if (numBuffers == 1) {
-        /*
-         * If we have only one buffer, we never use page-flipping. Instead,
-         * we return a regular buffer which will be memcpy'ed to the main
-         * screen when post is called.
-         */
-        int newUsage = (usage & ~GRALLOC_USAGE_HW_FB) | GRALLOC_USAGE_HW_2D;
-        ALOGE("fallback to single buffering");
-        return gralloc_alloc_buffer(dev, bufferSize, newUsage, pHandle, w, h, format, bpp, 0, 0);
-    }
-    
-    if (bufferMask >= ((1LU<<numBuffers)-1))
-    {
-        ALOGE("########## alloc fb failed!!!"); //wjj added
-        return -ENOMEM;
-    }
+	// allocate the framebuffer
+	if (m->framebuffer == NULL)
+	{
+		// initialize the framebuffer, the framebuffer is mapped once and forever.
+		int err = init_frame_buffer_locked(m);
 
-    int vaddr = m->framebuffer->base;
-    /* find a free slot */
-    for (uint32_t i = 0; i < numBuffers; i++) {
-        if ((bufferMask & (1LU<<i)) == 0) {
-            m->bufferMask |= (1LU<<i);
-            break;
-        }
-        vaddr += bufferSize;
-    }
+		if (err < 0)
+		{
+			return err;
+		}
+	}
 
-    /*
-     * The entire framebuffer memory is already mapped,
-     * now create a buffer object for parts of this memory
-     */
-    private_handle_t* hnd = new private_handle_t
-            (private_handle_t::PRIV_FLAGS_FRAMEBUFFER, size, vaddr,
-             0, dup(m->framebuffer->fd), vaddr - m->framebuffer->base);
+	const uint32_t bufferMask = m->bufferMask;
+	const uint32_t numBuffers = m->numBuffers;
+	const size_t bufferSize = m->finfo.line_length * m->info.yres;
 
-    hnd->format = format;
-    hnd->usage = usage;
-    hnd->width = w;
-    hnd->height = h;
-    hnd->bpp = bpp;
+	if (numBuffers == 1)
+	{
+		// If we have only one buffer, we never use page-flipping. Instead,
+		// we return a regular buffer which will be memcpy'ed to the main
+		// screen when post is called.
+		int newUsage = (usage & ~GRALLOC_USAGE_HW_FB) | GRALLOC_USAGE_HW_2D;
+		AERR("fallback to single buffering. Virtual Y-res too small %d", m->info.yres);
+		return gralloc_alloc_buffer(dev, bufferSize, newUsage, pHandle);
+	}
 
-    *pHandle = hnd;
+	if (bufferMask >= ((1LU << numBuffers) - 1))
+	{
+		// We ran out of buffers.
+		return -ENOMEM;
+	}
 
-    return 0;
-}
+	int vaddr = m->framebuffer->base;
 
-static int gralloc_alloc_framebuffer(alloc_device_t* dev, size_t size, int usage,
-                                     buffer_handle_t* pHandle, int w, int h,
-                                     int format, int bpp)
-{
-   
-    private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
-    pthread_mutex_lock(&m->lock);
-    int err = gralloc_alloc_framebuffer_locked(dev, size, usage, pHandle, w, h, format, bpp);
-    pthread_mutex_unlock(&m->lock);
-    return err;
-}
+	// find a free slot
+	for (uint32_t i = 0 ; i < numBuffers ; i++)
+	{
+		if ((bufferMask & (1LU << i)) == 0)
+		{
+			m->bufferMask |= (1LU << i);
+			break;
+		}
 
-static int alloc_device_alloc(alloc_device_t* dev, int w, int h, int format,
-                              int usage, buffer_handle_t* pHandle, int* pStride)
-{
-    if (!pHandle || !pStride)
-        return -EINVAL;
+		vaddr += bufferSize;
+	}
 
-    size_t size = 0;
-    size_t stride = 0;
-    size_t stride_raw = 0;
+	// The entire framebuffer memory is already mapped, now create a buffer object for parts of this memory
+	private_handle_t *hnd = new private_handle_t(private_handle_t::PRIV_FLAGS_FRAMEBUFFER, usage, size, vaddr,
+	        0, dup(m->framebuffer->fd), vaddr - m->framebuffer->base);
+#if GRALLOC_ARM_UMP_MODULE
+	hnd->ump_id = m->framebuffer->ump_id;
 
-    if (format == HAL_PIXEL_FORMAT_YCrCb_420_SP ||
-        format == HAL_PIXEL_FORMAT_YCbCr_422_SP ||
-        format == HAL_PIXEL_FORMAT_YV12 ||
-        format == GGL_PIXEL_FORMAT_L_8 ||
-        format == OMX_COLOR_FormatYUV420Planar ||
-        format == OMX_COLOR_FormatYUV420SemiPlanar) {
-        /* FIXME: there is no way to return the vstride */
-        int vstride;
-        stride = (w + 15) & ~15;
-        vstride = (h + 15) & ~15;
-        switch (format) {
-        case HAL_PIXEL_FORMAT_YCrCb_420_SP:
-        case HAL_PIXEL_FORMAT_YV12:
-        case OMX_COLOR_FormatYUV420Planar:
-        case OMX_COLOR_FormatYUV420SemiPlanar:
-            size = stride * vstride + EXYNOS4_ALIGN((w / 2), 16) * EXYNOS4_ALIGN((h / 2), 16) * 2;
-            break;
-        case HAL_PIXEL_FORMAT_YCbCr_422_SP:
-            size = (stride * vstride) + (w/2 * h/2) * 2;
-            break;
-        case GGL_PIXEL_FORMAT_L_8:
-            size = (stride * vstride);
-            break;
-        default:
-            return -EINVAL;
-        }
-    } else {
-        int align = 8;
-        int bpp = 0;
-        switch (format) {
-        case HAL_PIXEL_FORMAT_RGBA_8888:
-        case HAL_PIXEL_FORMAT_RGBX_8888:
-        case HAL_PIXEL_FORMAT_BGRA_8888:
-            bpp = 4;
-            break;
-        case HAL_PIXEL_FORMAT_RGB_888:
-            bpp = 3;
-            break;
-        case HAL_PIXEL_FORMAT_RGB_565:
-        case HAL_PIXEL_FORMAT_RGBA_5551:
-        case HAL_PIXEL_FORMAT_RGBA_4444:
-            bpp = 2;
-            break;
-        default:
-            return -EINVAL;
-        }
-        size_t bpr = (w*bpp + (align-1)) & ~(align-1);
-        size = bpr * h;
-        stride = bpr / bpp;
-        stride_raw = bpr;
-    }
+	/* create a backing ump memory handle if the framebuffer is exposed as a secure ID */
+	if ((int)UMP_INVALID_SECURE_ID != hnd->ump_id)
+	{
+		hnd->ump_mem_handle = (int)ump_handle_create_from_secure_id(hnd->ump_id);
 
-    int err;
-    pthread_mutex_lock(&l_surface);
-    if (usage & GRALLOC_USAGE_HW_FB)
-        err = gralloc_alloc_framebuffer(dev, size, usage, pHandle, w, h, format, 32);
-    else
-        err = gralloc_alloc_buffer(dev, size, usage, pHandle, w, h, format, 0, (int)stride_raw, (int)stride);
+		if ((int)UMP_INVALID_MEMORY_HANDLE == hnd->ump_mem_handle)
+		{
+			AINF("warning: unable to create UMP handle from secure ID %i\n", hnd->ump_id);
+		}
+	}
 
-    pthread_mutex_unlock(&l_surface);
-
-    if (err < 0)
-        return err;
-
-    *pStride = stride;
-    return 0;
-}
-
-static int alloc_device_free(alloc_device_t* dev, buffer_handle_t handle)
-{
-    if (private_handle_t::validate(handle) < 0)
-        return -EINVAL;
-
-    private_handle_t const* hnd = reinterpret_cast<private_handle_t const*>(handle);
-    private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
-    pthread_mutex_lock(&l_surface);
-    if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER) {
-        /* free this buffer */
-        const size_t bufferSize = m->finfo.line_length * m->info.yres;
-        int index = (hnd->base - m->framebuffer->base) / bufferSize;
-        m->bufferMask &= ~(1<<index);
-        close(hnd->fd);
-    } else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_UMP) {
-#ifdef USE_PARTIAL_FLUSH
-        if (!release_rect((int)hnd->ump_id))
-            ALOGE("secure id: 0x%x, release error",(int)hnd->ump_id);
 #endif
-        ump_mapped_pointer_release((ump_handle)hnd->ump_mem_handle);
-        ump_reference_release((ump_handle)hnd->ump_mem_handle);
-    } else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION) {
-#ifdef USE_PARTIAL_FLUSH
-        if (!release_rect((int)hnd->ump_id))
-            ALOGE("secure id: 0x%x, release error",(int)hnd->ump_id);
-#endif
-        ump_mapped_pointer_release((ump_handle)hnd->ump_mem_handle);
-        ump_reference_release((ump_handle)hnd->ump_mem_handle);
-    }
-    pthread_mutex_unlock(&l_surface);
-    delete hnd;
 
-    return 0;
+#if GRALLOC_ARM_DMA_BUF_MODULE
+	{
+#ifdef FBIOGET_DMABUF
+		struct fb_dmabuf_export fb_dma_buf;
+
+		if (ioctl(m->framebuffer->fd, FBIOGET_DMABUF, &fb_dma_buf) == 0)
+		{
+			AINF("framebuffer accessed with dma buf (fd 0x%x)\n", (int)fb_dma_buf.fd);
+			hnd->share_fd = fb_dma_buf.fd;
+		}
+
+#endif
+	}
+#endif
+
+	*pHandle = hnd;
+
+	return 0;
+}
+
+static int gralloc_alloc_framebuffer(alloc_device_t *dev, size_t size, int usage, buffer_handle_t *pHandle)
+{
+	private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
+	pthread_mutex_lock(&m->lock);
+	int err = gralloc_alloc_framebuffer_locked(dev, size, usage, pHandle);
+	pthread_mutex_unlock(&m->lock);
+	return err;
+}
+
+static int alloc_device_alloc(alloc_device_t *dev, int w, int h, int format, int usage, buffer_handle_t *pHandle, int *pStride)
+{
+	if (!pHandle || !pStride)
+	{
+		return -EINVAL;
+	}
+
+	size_t size;
+	size_t stride;
+
+	if (format == HAL_PIXEL_FORMAT_YCrCb_420_SP || format == HAL_PIXEL_FORMAT_YV12)
+	{
+		switch (format)
+		{
+			case HAL_PIXEL_FORMAT_YCrCb_420_SP:
+			case HAL_PIXEL_FORMAT_YV12:
+				stride = GRALLOC_ALIGN(w, 16);
+				size = h * (stride + GRALLOC_ALIGN(stride / 2, 16));
+
+				break;
+
+			default:
+				return -EINVAL;
+		}
+	}
+	else
+	{
+		int bpp = 0;
+
+		switch (format)
+		{
+			case HAL_PIXEL_FORMAT_RGBA_8888:
+			case HAL_PIXEL_FORMAT_RGBX_8888:
+			case HAL_PIXEL_FORMAT_BGRA_8888:
+				bpp = 4;
+				break;
+
+			case HAL_PIXEL_FORMAT_RGB_888:
+				bpp = 3;
+				break;
+
+			case HAL_PIXEL_FORMAT_RGB_565:
+#if PLATFORM_SDK_VERSION < 18
+			case HAL_PIXEL_FORMAT_RGBA_5551:
+			case HAL_PIXEL_FORMAT_RGBA_4444:
+#endif
+				bpp = 2;
+				break;
+
+			default:
+				return -EINVAL;
+		}
+
+		size_t bpr = GRALLOC_ALIGN(w * bpp, 64);
+		size = bpr * h;
+		stride = bpr / bpp;
+	}
+
+	int err;
+
+#ifndef MALI_600
+
+	if (usage & GRALLOC_USAGE_HW_FB)
+	{
+		err = gralloc_alloc_framebuffer(dev, size, usage, pHandle);
+	}
+	else
+#endif
+
+	{
+		err = gralloc_alloc_buffer(dev, size, usage, pHandle);
+	}
+
+	if (err < 0)
+	{
+		return err;
+	}
+
+	/* match the framebuffer format */
+	if (usage & GRALLOC_USAGE_HW_FB)
+	{
+		format = HAL_PIXEL_FORMAT_BGRA_8888;
+	}
+
+	private_handle_t *hnd = (private_handle_t *)*pHandle;
+	int               private_usage = usage & (GRALLOC_USAGE_PRIVATE_0 |
+	                                  GRALLOC_USAGE_PRIVATE_1);
+
+	hnd->width = w;
+	hnd->height = h;
+	hnd->format = format;
+	hnd->stride = stride;
+
+	int display_height_align;
+	int display_width_align;
+	display_height_align = (hnd->height + 1) & (~1);
+	display_width_align  = (hnd->width + 15) & (~15);
+	if (display_height_align % 8 != 0)
+	{
+		if ((display_width_align * display_height_align) % 256 != 0)
+		{
+			display_height_align = (display_height_align + 7) & ~7;
+		}
+	}
+
+	hnd->uoffset = display_width_align * display_height_align;
+	int dst_c_stride = (hnd->width / 2 + 15) & (~15);
+	hnd->voffset = dst_c_stride * (display_height_align / 2);
+
+	*pStride = stride;
+	return 0;
+}
+
+static int alloc_device_free(alloc_device_t *dev, buffer_handle_t handle)
+{
+	if (private_handle_t::validate(handle) < 0)
+	{
+		return -EINVAL;
+	}
+
+	private_handle_t const *hnd = reinterpret_cast<private_handle_t const *>(handle);
+
+	if (hnd->flags & private_handle_t::PRIV_FLAGS_FRAMEBUFFER)
+	{
+		// free this buffer
+		private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
+		const size_t bufferSize = m->finfo.line_length * m->info.yres;
+		int index = (hnd->base - m->framebuffer->base) / bufferSize;
+		m->bufferMask &= ~(1 << index);
+		close(hnd->fd);
+
+#if GRALLOC_ARM_UMP_MODULE
+
+		if ((int)UMP_INVALID_MEMORY_HANDLE != hnd->ump_mem_handle)
+		{
+			ump_reference_release((ump_handle)hnd->ump_mem_handle);
+		}
+
+#endif
+	}
+	else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_UMP)
+	{
+#if GRALLOC_ARM_UMP_MODULE
+
+		/* Buffer might be unregistered so we need to check for invalid ump handle*/
+		if ((int)UMP_INVALID_MEMORY_HANDLE != hnd->ump_mem_handle)
+		{
+			ump_mapped_pointer_release((ump_handle)hnd->ump_mem_handle);
+			ump_reference_release((ump_handle)hnd->ump_mem_handle);
+		}
+
+#else
+		AERR("Can't free ump memory for handle:0x%x. Not supported.", (unsigned int)hnd);
+#endif
+	}
+	else if (hnd->flags & private_handle_t::PRIV_FLAGS_USES_ION)
+	{
+#if GRALLOC_ARM_DMA_BUF_MODULE
+		private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
+
+		/* Buffer might be unregistered so we need to check for invalid ump handle*/
+		if (0 != hnd->base)
+		{
+			if (0 != munmap((void *)hnd->base, hnd->size))
+			{
+				AERR("Failed to munmap handle 0x%x", (unsigned int)hnd);
+			}
+		}
+
+		close(hnd->share_fd);
+
+		if (0 != ion_free(m->ion_client, hnd->ion_hnd))
+		{
+			AERR("Failed to ion_free( ion_client: %d ion_hnd: %p )", m->ion_client, hnd->ion_hnd);
+		}
+
+		memset((void *)hnd, 0, sizeof(*hnd));
+#else
+		AERR("Can't free dma_buf memory for handle:0x%x. Not supported.", (unsigned int)hnd);
+#endif
+
+	}
+
+	delete hnd;
+
+	return 0;
 }
 
 static int alloc_device_close(struct hw_device_t *device)
 {
-    alloc_device_t* dev = reinterpret_cast<alloc_device_t*>(device);
-    if (dev) {
-        private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
-        delete dev;
-        ump_close();
-    }
-    return 0;
+	alloc_device_t *dev = reinterpret_cast<alloc_device_t *>(device);
+
+	if (dev)
+	{
+#if GRALLOC_ARM_DMA_BUF_MODULE
+		private_module_t *m = reinterpret_cast<private_module_t *>(device);
+
+		if (0 != ion_close(m->ion_client))
+		{
+			AERR("Failed to close ion_client: %d", m->ion_client);
+		}
+
+		close(m->ion_client);
+#endif
+		delete dev;
+#if GRALLOC_ARM_UMP_MODULE
+		ump_close(); // Our UMP memory refs will be released automatically here...
+#endif
+	}
+
+	return 0;
 }
 
-int alloc_device_open(hw_module_t const* module, const char* name, hw_device_t** device)
+int alloc_device_open(hw_module_t const *module, const char *name, hw_device_t **device)
 {
-    alloc_device_t *dev;
+	alloc_device_t *dev;
 
-    dev = new alloc_device_t;
-    if (NULL == dev)
-        return -1;
+	dev = new alloc_device_t;
 
-    dev->common.module = const_cast<hw_module_t*>(module);
-    private_module_t* m = reinterpret_cast<private_module_t*>(dev->common.module);
-    ump_result ump_res = ump_open();
-    if (UMP_OK != ump_res) {
-        ALOGE("UMP open failed ump_res %d", ump_res);
-        delete dev;
-        return -1;
-    }
+	if (NULL == dev)
+	{
+		return -1;
+	}
 
-    /* initialize our state here */
-    memset(dev, 0, sizeof(*dev));
+#if GRALLOC_ARM_UMP_MODULE
+	ump_result ump_res = ump_open();
 
-    /* initialize the procs */
-    dev->common.tag = HARDWARE_DEVICE_TAG;
-    dev->common.version = 0;
-    dev->common.module = const_cast<hw_module_t*>(module);
-    dev->common.close = alloc_device_close;
-    dev->alloc = alloc_device_alloc;
-    dev->free = alloc_device_free;
+	if (UMP_OK != ump_res)
+	{
+		AERR("UMP open failed with %d", ump_res);
+		delete dev;
+		return -1;
+	}
 
-    *device = &dev->common;
+#endif
 
-    return 0;
+	/* initialize our state here */
+	memset(dev, 0, sizeof(*dev));
+
+	/* initialize the procs */
+	dev->common.tag = HARDWARE_DEVICE_TAG;
+	dev->common.version = 0;
+	dev->common.module = const_cast<hw_module_t *>(module);
+	dev->common.close = alloc_device_close;
+	dev->alloc = alloc_device_alloc;
+	dev->free = alloc_device_free;
+
+#if GRALLOC_ARM_DMA_BUF_MODULE
+	private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
+	m->ion_client = ion_open();
+
+	if (m->ion_client < 0)
+	{
+		AERR("ion_open failed with %s", strerror(errno));
+		delete dev;
+		return -1;
+	}
+
+#endif
+
+	private_module_t *m = reinterpret_cast<private_module_t *>(dev->common.module);
+	m->disp_client = open("/dev/disp", O_RDWR);
+	if (m->disp_client < 0)
+	{
+		AERR("open /dev/disp failed with %s", strerror(errno));
+		delete dev;
+		return -1;
+	}
+
+	*device = &dev->common;
+
+	return 0;
 }

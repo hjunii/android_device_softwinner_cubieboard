@@ -35,17 +35,17 @@ typedef enum
 
 typedef enum
 {
-    DISP_MOD_INTERLEAVED        =0x1,   //interleaved,1赂枚碌脴脰路
-    DISP_MOD_NON_MB_PLANAR      =0x0,   //脦脼潞锚驴茅脝陆脙忙脛拢脢陆,3赂枚碌脴脰路,RGB/YUV脙驴赂枚channel路脰卤冒麓忙路脜
-    DISP_MOD_NON_MB_UV_COMBINED =0x2,   //脦脼潞锚驴茅UV麓貌掳眉脛拢脢陆,2赂枚碌脴脰路,Y潞脥UV路脰卤冒麓忙路脜
-    DISP_MOD_MB_PLANAR          =0x4,   //潞锚驴茅脝陆脙忙脛拢脢陆,3赂枚碌脴脰路,RGB/YUV脙驴赂枚channel路脰卤冒麓忙路脜
-    DISP_MOD_MB_UV_COMBINED     =0x6,   //潞锚驴茅UV麓貌掳眉脛拢脢陆 ,2赂枚碌脴脰路,Y潞脥UV路脰卤冒麓忙路脜
+    DISP_MOD_INTERLEAVED        =0x1,   //interleaved,1个地址
+    DISP_MOD_NON_MB_PLANAR      =0x0,   //无宏块平面模式,3个地址,RGB/YUV每个channel分别存放
+    DISP_MOD_NON_MB_UV_COMBINED =0x2,   //无宏块UV打包模式,2个地址,Y和UV分别存放
+    DISP_MOD_MB_PLANAR          =0x4,   //宏块平面模式,3个地址,RGB/YUV每个channel分别存放
+    DISP_MOD_MB_UV_COMBINED     =0x6,   //宏块UV打包模式 ,2个地址,Y和UV分别存放
 }__disp_pixel_mod_t;
 
 typedef enum
 {
 //for interleave argb8888
-    DISP_SEQ_ARGB   =0x0,//A脭脷赂脽脦禄
+    DISP_SEQ_ARGB   =0x0,//A在高位
     DISP_SEQ_BGRA   =0x2,
     
 //for nterleaved yuv422
@@ -63,12 +63,12 @@ typedef enum
     DISP_SEQ_VUVU   =0xa,
     
 //for 16bpp rgb
-    DISP_SEQ_P10    = 0xd,//p1脭脷赂脽脦禄
-    DISP_SEQ_P01    = 0xe,//p0脭脷赂脽脦禄
+    DISP_SEQ_P10    = 0xd,//p1在高位
+    DISP_SEQ_P01    = 0xe,//p0在高位
     
 //for planar format or 8bpp rgb
-    DISP_SEQ_P3210  = 0xf,//p3脭脷赂脽脦禄
-    DISP_SEQ_P0123  = 0x10,//p0脭脷赂脽脦禄
+    DISP_SEQ_P3210  = 0xf,//p3在高位
+    DISP_SEQ_P0123  = 0x10,//p0在高位
     
 //for 4bpp rgb
     DISP_SEQ_P76543210  = 0x11,
@@ -285,8 +285,8 @@ typedef enum//only for debug!!!
 
 typedef struct
 {
-    __u32                   addr[3];    // frame buffer碌脛脛脷脠脻碌脴脰路拢卢露脭脫脷rgb脌脿脨脥拢卢脰禄脫脨addr[0]脫脨脨搂
-    __disp_rectsz_t         size;//碌楼脦禄脢脟pixel
+    __u32                   addr[3];    // frame buffer的内容地址，对于rgb类型，只有addr[0]有效
+    __disp_rectsz_t         size;//单位是pixel
     __disp_pixel_fmt_t      format;
     __disp_pixel_seq_t      seq;
     __disp_pixel_mod_t      mode;
@@ -302,7 +302,7 @@ typedef struct
     __disp_layer_work_mode_t    mode;       //layer work mode
     __bool                      b_from_screen;
     __u8                        pipe;       //layer pipe,0/1,if in scaler mode, scaler0 must be pipe0, scaler1 must be pipe1
-    __u8                        prio;       //layer priority,can get layer prio,but never set layer prio,麓脫碌脳脰脕露楼,脫脜脧脠录露脫脡碌脥脰脕赂脽
+    __u8                        prio;       //layer priority,can get layer prio,but never set layer prio,从底至顶,优先级由低至高
     __bool                      alpha_en;   //layer global alpha enable
     __u16                       alpha_val;  //layer global alpha value 
     __bool                      ck_enable;  //layer color key enable
@@ -329,7 +329,7 @@ typedef struct
     __u32   addr_right[3];//used when in frame packing 3d mode
     __bool  interlace;
     __bool  top_field_first;
-    __u32   frame_rate; // *FRAME_RATE_BASE(脧脰脭脷露篓脦陋1000)
+    __u32   frame_rate; // *FRAME_RATE_BASE(现在定为1000)
     __u32   flag_addr;//dit maf flag address
     __u32   flag_stride;//dit maf flag line stride
     __bool  maf_valid;
@@ -353,7 +353,7 @@ typedef struct
     __disp_fb_t     input_fb;
     __disp_rect_t   source_regn;
     __disp_fb_t     output_fb;
-    //__disp_rect_t   out_regn;
+    __disp_rect_t   out_regn;
 }__disp_scaler_para_t;
 
 typedef struct
@@ -488,6 +488,7 @@ typedef struct lcd_flow
 {
     __lcd_function_t func[5];
     __u32 func_num;
+    __u32 cur_step;
 }__lcd_flow_t;
 
 typedef struct
@@ -609,7 +610,7 @@ typedef enum tag_DISP_CMD
     DISP_CMD_DRC_SET_WINDOW = 0x28,
     DISP_CMD_SET_HUE = 0x29,
     DISP_CMD_GET_HUE = 0x2a,
-    DISP_CMD_VSYNC_EVENT_EN = 0x2b,
+	DISP_CMD_VSYNC_EVENT_EN = 0x2b,
 
 //----layer----
     DISP_CMD_LAYER_REQUEST = 0x40,
@@ -639,10 +640,10 @@ typedef enum tag_DISP_CMD
     DISP_CMD_LAYER_GET_PRIO = 0x58,
     DISP_CMD_LAYER_SET_SMOOTH = 0x59,
     DISP_CMD_LAYER_GET_SMOOTH = 0x5a,
-    DISP_CMD_LAYER_SET_BRIGHT = 0x5b,//脕脕露脠
-    DISP_CMD_LAYER_SET_CONTRAST = 0x5c,//露脭卤脠露脠
-    DISP_CMD_LAYER_SET_SATURATION = 0x5d,//卤楼潞脥露脠
-    DISP_CMD_LAYER_SET_HUE = 0x5e,//脡芦碌梅,脡芦露脠
+    DISP_CMD_LAYER_SET_BRIGHT = 0x5b,//亮度
+    DISP_CMD_LAYER_SET_CONTRAST = 0x5c,//对比度
+    DISP_CMD_LAYER_SET_SATURATION = 0x5d,//饱和度
+    DISP_CMD_LAYER_SET_HUE = 0x5e,//色调,色度
     DISP_CMD_LAYER_GET_BRIGHT = 0x5f,
     DISP_CMD_LAYER_GET_CONTRAST = 0x60,
     DISP_CMD_LAYER_GET_SATURATION = 0x61,
@@ -666,6 +667,7 @@ typedef enum tag_DISP_CMD
     DISP_CMD_SCALER_REQUEST = 0x80,
     DISP_CMD_SCALER_RELEASE = 0x81,
     DISP_CMD_SCALER_EXECUTE = 0x82,
+    DISP_CMD_SCALER_EXECUTE_EX = 0x83,
 
 //----hwc----
     DISP_CMD_HWC_OPEN = 0xc0,
@@ -791,4 +793,3 @@ typedef enum tag_DISP_CMD
 #define FBIO_DISPLAY_TWO_DIFF_SCREEN_SAME_CONTENTS 0x4723
 
 #endif
-
